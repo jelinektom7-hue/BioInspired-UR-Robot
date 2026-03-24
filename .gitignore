@@ -1,0 +1,16 @@
+**/build/
+**/install/
+**/log/
+**/env/
+**/.venv/
+**/.env/
+**/__pycache/
+**/tensors/
+**/.vscode/
+
+**/Gymnasium-Robotics/
+**/MUJOCO_LOG.TXT
+*tensorboard
+*.zip
+flying_object_tracking/
+3d_simulation_whip2hit/

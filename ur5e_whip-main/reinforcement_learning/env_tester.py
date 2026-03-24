@@ -1,0 +1,32 @@
+import gymnasium as gym
+import numpy as np
+import gymnasium_env
+
+
+ENVIRONMENT = 'gymnasium_env/WhipWorld-v0'
+
+
+env = gym.make(ENVIRONMENT, render_mode="human")
+observaton, info = env.reset()
+
+for i in range (100_000):
+
+    # action = env.action_space.sample()
+    action = [0.0, 0, 0, 0, 0, 0]
+    # action = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    # action = [1.0, -np.pi*3/4, np.pi/2, 0.0, 0.0, 0.0]
+
+    observaton, reward, terminated, truncated, _ = env.step(action)
+    if terminated or truncated:
+        print("reset")
+        env.reset()
+
+    if i % 100 == 0:
+        print(
+            "reward:", reward, "\n" \
+            # "action:", action, "\n" \
+            # "observation:", observaton, "\n" \
+            # "info:" , info
+            )
+
+env.close()
