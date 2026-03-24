@@ -1,0 +1,10 @@
+# this is for python 3.12.3
+catkin_pkg
+empy
+exifread
+icecream
+lark
+matplotlib
+numpy
+opencv-python
+scikit-learn
