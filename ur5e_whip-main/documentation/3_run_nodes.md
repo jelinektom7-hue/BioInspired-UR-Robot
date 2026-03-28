@@ -6,6 +6,33 @@
 . /opt/ros/jazzy/setup.bash && . . ~/ros2_ws/install/setup.bash
 ```
 
+
+## Simulate Camera
+
+```
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+export PYTHONPATH=$HOME/.venvs/ur5e_whip_env/lib/python3.12/site-packages:$PYTHONPATH
+python3 ~/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator/mujoco_camera_bridge.py
+```
+
+## Subscribe to camera output
+
+```
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 run image_object_locator image_subscriber
+```
+
+## Detect position of the green ball
+
+```
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 topic echo /target_position
+```
+
+
 ## Calibrate Camera
 Before anything else, you should calibrate your camera. This is done using the "camera-calibration-with-large-chessboards" package.
 

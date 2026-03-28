@@ -9,8 +9,12 @@ import numpy as np
 import rclpy
 
 from image_object_locator import imgproc
+from pathlib import Path
 
-resource = "src/ur5e_whip/image_object_locator/resource/"
+
+resource = str(
+    Path.home() / "ros2_ws" / "src" / "BioInspired-UR-Robot" / "ur5e_whip-main" / "image_object_locator" / "resource"
+) + "/"
 camera_calibration_document = resource + "camera_calibration.txt"
 
 class ImageSubscriber(Node):

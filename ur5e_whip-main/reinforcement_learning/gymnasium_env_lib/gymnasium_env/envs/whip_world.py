@@ -22,7 +22,7 @@ class WhipWorldEnv(gym.Env):
     
     def __init__(self, render_mode=None):
         # Path to MJCF file
-        MJCF_PATH = os.path.expanduser("~") + "/ros2_ws/src/ur5e_whip/mujoco_simulator/ur5e_new_whip.xml"
+        MJCF_PATH = os.path.expanduser("~") + "/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator/ur5e_new_whip.xml"
 
         # Ensure MJCF file exists
         if not os.path.exists(MJCF_PATH):
