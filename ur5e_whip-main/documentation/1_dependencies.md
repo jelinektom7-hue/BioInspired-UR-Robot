@@ -23,7 +23,7 @@ source ~/ros2_ws/env/bin/activate
 ### Install `requirements.txt`
 Then install the python packages in the requirements.txt:
 ```bash
-pip install -r ~/ros2_ws/src/ur5e_whip/requirements.txt
+pip install -r ~/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/requirements.txt
 ```
 
 To add new files to the requirements.txt, first source your environment and then run the following command:
@@ -135,9 +135,15 @@ rosdep install -i --from-path src --rosdistro $ROS_DISTRO --skip-keys=librealsen
 ```
 
 Install additional tools required for building:
-
+ 
 ```bash
 sudo apt install python3-colcon-common-extensions python3-colcon-mixin
+```
+
+Go to ROS source for the next commands
+
+```bash
+cd ~/ros_ws/src
 ```
 
 Add and update the colcon mixin:
