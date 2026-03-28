@@ -1,11 +1,14 @@
 # Run Nodes
 
+
 ## Source ROS environment
 
 ```bash
 . /opt/ros/jazzy/setup.bash && . . ~/ros2_ws/install/setup.bash
 ```
 
+
+# Simulated camera
 
 ## Simulate Camera
 
@@ -23,6 +26,16 @@ source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
 ros2 run image_object_locator image_subscriber
 ```
+
+## Launch target position cam to world coordinates
+
+```
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+python3 ~/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator/camera_to_world.py
+```
+
+# Real Camera
 
 ## Detect position of the green ball
 

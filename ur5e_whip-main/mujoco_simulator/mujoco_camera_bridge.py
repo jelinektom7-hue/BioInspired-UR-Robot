@@ -9,11 +9,47 @@ from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 
+from geometry_msgs.msg import PoseStamped
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+
+
+def rotation_matrix_to_quaternion(R: np.ndarray):
+        q = np.empty(4, dtype=float)  # x, y, z, w
+        trace = np.trace(R)
+
+        if trace > 0.0:
+            s = 2.0 * np.sqrt(trace + 1.0)
+            q[3] = 0.25 * s
+            q[0] = (R[2, 1] - R[1, 2]) / s
+            q[1] = (R[0, 2] - R[2, 0]) / s
+            q[2] = (R[1, 0] - R[0, 1]) / s
+        elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+            q[3] = (R[2, 1] - R[1, 2]) / s
+            q[0] = 0.25 * s
+            q[1] = (R[0, 1] + R[1, 0]) / s
+            q[2] = (R[0, 2] + R[2, 0]) / s
+        elif R[1, 1] > R[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+            q[3] = (R[0, 2] - R[2, 0]) / s
+            q[0] = (R[0, 1] + R[1, 0]) / s
+            q[1] = 0.25 * s
+            q[2] = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+            q[3] = (R[1, 0] - R[0, 1]) / s
+            q[0] = (R[0, 2] + R[2, 0]) / s
+            q[1] = (R[1, 2] + R[2, 1]) / s
+            q[2] = 0.25 * s
+
+        q /= np.linalg.norm(q)
+        return q  # x, y, z, w
 
 class MujocoCameraBridge(Node):
     def __init__(self):
         super().__init__("mujoco_camera_bridge")
 
+        # Parameters for the camera and rendering
         self.width = 640
         self.height = 480
         self.fps = 15.0
@@ -29,6 +65,7 @@ class MujocoCameraBridge(Node):
         )
         self.model_path = self.repo_root / "mujoco_simulator" / "ur5e_new_whip.xml"
 
+        # Check that the model file exists before trying to load it
         if not self.model_path.exists():
             raise FileNotFoundError(f"Model not found: {self.model_path}")
 
@@ -91,6 +128,36 @@ class MujocoCameraBridge(Node):
         self.get_logger().info(
             f"fx={self.fx:.3f}, fy={self.fy:.3f}, cx={self.cx:.3f}, cy={self.cy:.3f}"
         )
+
+        qos_latched = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+
+        # Publish the camera pose once at startup since it doesn't change
+        self.pose_pub = self.create_publisher(
+            PoseStamped, "/camera_pose_world", qos_latched
+        )
+
+        # Camera pose from XML
+        self.t_cam_world = self.model.cam_pos[self.cam_id].copy()
+
+        x_axis = np.array([1.0, 0.0, 0.0], dtype=float)
+        y_axis = np.array([0.0, 0.3, 1.2], dtype=float)
+
+        x_axis /= np.linalg.norm(x_axis)
+        y_axis /= np.linalg.norm(y_axis)
+        z_axis = np.cross(x_axis, y_axis)
+        z_axis /= np.linalg.norm(z_axis)
+
+        # Columns = camera basis vectors expressed in world frame
+        self.R_cam_to_world = np.column_stack((x_axis, y_axis, z_axis))
+        self.q_cam_to_world = rotation_matrix_to_quaternion(self.R_cam_to_world)
+
+        self.publish_camera_pose_once()
+
 
     @staticmethod
     def compute_intrinsics(width: int, height: int, fovy_deg: float):
@@ -189,7 +256,27 @@ class MujocoCameraBridge(Node):
         self.depth_pub.publish(depth_msg)
         self.rgb_info_pub.publish(self.rgb_info_msg)
         self.depth_info_pub.publish(self.depth_info_msg)
+        
+    def publish_camera_pose_once(self):
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "world"
 
+        msg.pose.position.x = float(self.t_cam_world[0])
+        msg.pose.position.y = float(self.t_cam_world[1])
+        msg.pose.position.z = float(self.t_cam_world[2])
+
+        msg.pose.orientation.x = float(self.q_cam_to_world[0])
+        msg.pose.orientation.y = float(self.q_cam_to_world[1])
+        msg.pose.orientation.z = float(self.q_cam_to_world[2])
+        msg.pose.orientation.w = float(self.q_cam_to_world[3])
+
+        self.pose_pub.publish(msg)
+
+        self.get_logger().info(
+            f"Published camera pose: "
+            f"pos=({msg.pose.position.x:.3f}, {msg.pose.position.y:.3f}, {msg.pose.position.z:.3f})"
+        )
 
 def main(args=None):
     rclpy.init(args=args)
