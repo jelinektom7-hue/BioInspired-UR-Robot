@@ -5,10 +5,8 @@ import mujoco
 import mujoco.viewer
 
 
-# WHIP_END_NAME = "whip_seg40"
-WHIP_END_NAME = "body_whip_node12"
-END_EFFECTOR_NAME = "body_whip_node1"
-
+WHIP_END_NAME = "whip_end"
+END_EFFECTOR_NAME = "whip_start"
 
 REACH_TASK = "reach"
 WHIP_TASK = "whip"
@@ -19,43 +17,35 @@ TASK = WHIP_TASK
 class WhipWorldEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 4}
 
-    
     def __init__(self, render_mode=None):
-        # Path to MJCF file
-        MJCF_PATH = os.path.expanduser("~") + "/ros2_ws/src/ur5e_whip/mujoco_simulator/ur5e_new_whip.xml"
+        MJCF_PATH = os.path.expanduser("~") + "/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator/ur5e_whip_near_accurate_fixed.xml"
 
-        # Ensure MJCF file exists
         if not os.path.exists(MJCF_PATH):
             print("Error! Path does not exist:", MJCF_PATH, "Working directory at:", os.getcwd())
             exit()
 
-        # Load the MuJoCo model
         self.model = mujoco.MjModel.from_xml_path(MJCF_PATH)
         self.data = mujoco.MjData(self.model)
 
-        # Set the simulation parameters
         self.MUJOCO_STEPS_PR_ACTION = 10
-        self.MUJOCO_STEP_SIZE = 0.001 # [s]
+        self.MUJOCO_STEP_SIZE = 0.001
         self.model.opt.timestep = self.MUJOCO_STEP_SIZE
-        self.FULL_TIME = 10 # [s]
+        self.FULL_TIME = 10
         self._num_loops = int(self.FULL_TIME / self.model.opt.timestep)
         self._current_loop = 0
 
-        # Create observation and action spaces
         self.min_joint_values = [-2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi]
         self.max_joint_values = [ 2*np.pi,  2*np.pi,  2*np.pi,  2*np.pi,  2*np.pi,  2*np.pi]
         self.observation_space = gym.spaces.Dict(
             {
-                
-                "agent_joint_values" : gym.spaces.Box(low=np.array(self.min_joint_values), high=np.array(self.max_joint_values), shape=(6,), dtype=np.float64),
+                "agent_joint_values": gym.spaces.Box(low=np.array(self.min_joint_values), high=np.array(self.max_joint_values), shape=(6,), dtype=np.float64),
                 "target_position": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64),
                 "whip_position": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64)
             }
         )
         self.action_space = gym.spaces.Box(low=-0.1, high=0.1, shape=(6,), dtype=np.float64)
 
-        # Init variables
-        self._agent_joint_values  = np.zeros(6, dtype=np.float64)
+        self._agent_joint_values = np.zeros(6, dtype=np.float64)
         self._target_position = np.zeros(3, dtype=np.float64)
         self._whip_position = np.zeros(3, dtype=np.float64)
         self._shortest_distance_to_target = np.inf
@@ -65,7 +55,7 @@ class WhipWorldEnv(gym.Env):
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
-        
+
         if self.render_mode == "human":
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
 
@@ -77,7 +67,7 @@ class WhipWorldEnv(gym.Env):
             4: self.model.body("wrist_1_link").id,
             5: self.model.body("wrist_2_link").id,
             6: self.model.body("wrist_3_link").id,
-            }
+        }
     
 
     def _get_obs(self):
@@ -101,33 +91,47 @@ class WhipWorldEnv(gym.Env):
         reward = 0
 
         if TASK == REACH_TASK:
-            # Calculate reward based on: Current distance
-            # reward = -self._distance_to_target*self._distance_to_target
-            # if self._distance_to_target < 1:
-            #     reward = -self._distance_to_target
-            
             reward = -self._distance_to_target
 
         elif TASK == WHIP_TASK:
             # Current distance reward
-            distance_reward = np.exp(-self._distance_to_target * 10)  # sharper curve to prioritize closeness
+            distance_reward = np.exp(-self._distance_to_target * 10)
 
             # Velocity towards target reward
-            velocity_reward = 0
+            velocity_reward = 0.0
             if self._distance_to_target < 0.3:
                 direction_to_target = self._target_position - self._whip_position_old
                 direction_to_target /= np.linalg.norm(direction_to_target) + 1e-6
                 velocity_toward_target = np.dot(self._whip_velocity, direction_to_target)
-                velocity_reward = max(0, velocity_toward_target * 5)
+                velocity_reward = max(0.0, velocity_toward_target * 5.0)
 
             # Closest distance reward
-            shortest_distance_reward = 10*np.exp(-self._shortest_distance_to_target)
+            shortest_distance_reward = 10.0 * np.exp(-self._shortest_distance_to_target)
 
-            # Penalize long episodes
-            time_penalty = -100 #* self._current_loop
+            # Small time penalty
+            time_penalty = -1.0
 
-            reward = distance_reward + velocity_reward + shortest_distance_reward + time_penalty
+            # Penalize whip tip getting too close to the ground
+            ground_penalty = 0.0
+            tip_z = self._whip_position[2]
+            if tip_z < 0.05:
+                ground_penalty = -50.0 * (0.05 - tip_z)
 
+            # Penalize downward motion near the target
+            downward_penalty = 0.0
+            if self._distance_to_target < 0.3:
+                vz = self._whip_velocity[2]
+                if vz < 0.0:
+                    downward_penalty = 5.0 * vz  # vz is negative, so this is a penalty
+
+            reward = (
+                distance_reward
+                + velocity_reward
+                + shortest_distance_reward
+                + time_penalty
+                + ground_penalty
+                + downward_penalty
+            )
 
         return reward
 
@@ -247,17 +251,23 @@ class WhipWorldEnv(gym.Env):
         if self._distance_to_target < self._shortest_distance_to_target:
             self._shortest_distance_to_target = self._distance_to_target
 
-        # Terminate
+        floor_hit = self._whip_position[2] < 0.02
+
         terminated = False
         if TASK == WHIP_TASK:
             terminated = self._distance_to_target < 0.1
 
-        # Truncate
         truncated = False
         if self._current_loop >= self._num_loops:
             truncated = True
 
+        if floor_hit:
+            truncated = True
+
         reward = self.calc_reward()
+
+        if floor_hit:
+            reward -= 100.0
         
         observation = self._get_obs()
         info = self._get_info()

@@ -16,9 +16,13 @@ for i in range (100_000):
     # action = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     # action = [1.0, -np.pi*3/4, np.pi/2, 0.0, 0.0, 0.0]
 
-    observaton, reward, terminated, truncated, _ = env.step(action)
-    if terminated or truncated:
-        print("reset")
+    observaton, reward, terminated, truncated, info = env.step(action)
+
+    if terminated:
+        print("reset: terminated")
+        env.reset()
+    elif truncated:
+        print("reset: truncated")
         env.reset()
 
     if i % 100 == 0:

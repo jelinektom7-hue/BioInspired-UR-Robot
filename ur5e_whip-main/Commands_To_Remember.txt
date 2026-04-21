@@ -1,0 +1,22 @@
+Open TensorBoard for checking on progress:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+
+python -m tensorboard.main --inspect --logdir /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_tensorboard
+
+python -m tensorboard.main --logdir /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_tensorboard
+
+Run on browser: http://localhost:6006/
+
+
+Check a checkpoint:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+ls -lh /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_models_my_run
+
+change the line in file SAC_evaluator
+
+MODEL_FILE = os.path.expanduser("~") + "/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_models_my_run/rl_model_1000000_steps.zip"
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning
+python SAC_evaluator.py
