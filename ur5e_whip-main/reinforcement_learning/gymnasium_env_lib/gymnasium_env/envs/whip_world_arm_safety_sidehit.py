@@ -30,12 +30,9 @@ class WhipWorldEnv(gym.Env):
         self.MUJOCO_STEPS_PR_ACTION = 10
         self.MUJOCO_STEP_SIZE = 0.001
         self.model.opt.timestep = self.MUJOCO_STEP_SIZE
-        self.FULL_TIME = 3
+        self.FULL_TIME = 6
         self._num_loops = int(self.FULL_TIME / self.model.opt.timestep)
         self._current_loop = 0
-        self._robot_ground_contact = False
-        self._whip_target_contact = False
-        self._whip_target_contact = False
 
         self.min_joint_values = [-2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi]
         self.max_joint_values = [2*np.pi, 2*np.pi, 2*np.pi, 2*np.pi, 2*np.pi, 2*np.pi]
@@ -115,43 +112,11 @@ class WhipWorldEnv(gym.Env):
             "arm_tip_ground_hit": self._arm_tip_ground_hit,
             "arm_self_contact": self._arm_self_contact,
             "bad_top_down_hit": self._bad_top_down_hit,
-            "robot_ground_contact": self._robot_ground_contact,
             "valid_side_hit": self._valid_side_hit,
             "whip_z": float(self._whip_position[2]),
             "whip_vz": float(self._whip_velocity[2]),
             "arm_tip_z": float(self._arm_tip_position[2]),
         }
-    
-    def _robot_ground_contact_detected(self):
-        """
-        Detect if any UR5e robot body contacts the world/ground.
-
-        This ignores whip-ground contact. The whip is allowed to touch the floor.
-        """
-        for i in range(self.data.ncon):
-            contact = self.data.contact[i]
-            geom1 = contact.geom1
-            geom2 = contact.geom2
-
-            if geom1 < 0 or geom2 < 0:
-                continue
-
-            body1_id = self.model.geom_bodyid[geom1]
-            body2_id = self.model.geom_bodyid[geom2]
-
-            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id)
-            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id)
-
-            body1_is_robot = body1_name in self.ROBOT_BODY_NAMES
-            body2_is_robot = body2_name in self.ROBOT_BODY_NAMES
-
-            body1_is_world = body1_id == 0
-            body2_is_world = body2_id == 0
-
-            if (body1_is_robot and body2_is_world) or (body2_is_robot and body1_is_world):
-                return True
-
-        return False
 
     def _robot_self_contact_detected(self):
         """
@@ -175,55 +140,6 @@ class WhipWorldEnv(gym.Env):
             if body1_name in self.ROBOT_BODY_NAMES and body2_name in self.ROBOT_BODY_NAMES:
                 if body1_name != body2_name:
                     return True
-
-        return False
-    
-    def _whip_target_contact_detected(self):
-        for i in range(self.data.ncon):
-            contact = self.data.contact[i]
-            geom1 = contact.geom1
-            geom2 = contact.geom2
-
-            if geom1 < 0 or geom2 < 0:
-                continue
-
-            body1_id = self.model.geom_bodyid[geom1]
-            body2_id = self.model.geom_bodyid[geom2]
-
-            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id)
-            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id)
-
-            if (
-                (body1_name == WHIP_END_NAME and body2_name == "bottle") or
-                (body2_name == WHIP_END_NAME and body1_name == "bottle")
-            ):
-                return True
-
-        return False
-    
-    def _whip_target_contact_detected(self):
-        for i in range(self.data.ncon):
-            contact = self.data.contact[i]
-            geom1 = contact.geom1
-            geom2 = contact.geom2
-
-            if geom1 < 0 or geom2 < 0:
-                continue
-
-            body1_id = self.model.geom_bodyid[geom1]
-            body2_id = self.model.geom_bodyid[geom2]
-
-            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id)
-            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id)
-
-            whip_hit = (
-                body1_name == WHIP_END_NAME and body2_name == "bottle"
-            ) or (
-                body2_name == WHIP_END_NAME and body1_name == "bottle"
-            )
-
-            if whip_hit:
-                return True
 
         return False
 
@@ -258,21 +174,15 @@ class WhipWorldEnv(gym.Env):
         action_change_penalty = -0.10 * np.sum(np.square(self._last_action - self._prev_action))
         joint_velocity_penalty = -0.01 * np.sum(np.square(self.data.qvel[:6]))
 
-        # Arm ground penalty (balanced)
         safety_penalty = 0.0
-
-        if self._current_loop > 300 and self._arm_tip_ground_hit:
-            safety_penalty -= 300.0
-
-        if self._robot_ground_contact:
-            safety_penalty -= 500.0
-
+        if self._arm_tip_ground_hit:
+            safety_penalty -= 150.0
         if self._arm_self_contact:
-            safety_penalty -= 300.0
+            safety_penalty -= 150.0
 
         hit_bonus = 0.0
         side_hit_bonus = 0.0
-        if self._whip_target_contact:
+        if self._distance_to_target < 0.10:
             hit_bonus = 100.0
 
             horizontal_speed = np.linalg.norm(self._whip_velocity[:2])
@@ -284,19 +194,6 @@ class WhipWorldEnv(gym.Env):
                 side_hit_bonus = 400.0
 
         time_penalty = -0.2
-
-        # Encourage the arm tip/end-effector to move toward the target.
-        # This prevents "do nothing", but does not reward random chaotic motion.
-        arm_motion_reward = 0.0
-
-        arm_to_target = self._target_position - self._arm_tip_position
-        arm_to_target_norm = np.linalg.norm(arm_to_target) + 1e-6
-        arm_to_target_dir = arm_to_target / arm_to_target_norm
-
-        arm_tip_velocity = self.data.cvel[self.model.body(END_EFFECTOR_NAME).id][:3]
-        arm_velocity_toward_target = np.dot(arm_tip_velocity, arm_to_target_dir)
-
-        arm_motion_reward = 0.5 * max(0.0, arm_velocity_toward_target)
 
         reward = (
             distance_reward
@@ -311,7 +208,6 @@ class WhipWorldEnv(gym.Env):
             + hit_bonus
             + side_hit_bonus
             + time_penalty
-            + arm_motion_reward
         )
 
         return float(reward)
@@ -331,34 +227,22 @@ class WhipWorldEnv(gym.Env):
         self._arm_self_contact = False
         self._bad_top_down_hit = False
         self._valid_side_hit = False
-        self._robot_ground_contact = False
-        self._whip_target_contact = False
 
-        # Fixed start pose. Keep this stable for the first side-hit training runs.
-        j0 = np.deg2rad(+0)
-        j1 = np.deg2rad(-110)
-        j2 = np.deg2rad(+65)
-        j3 = np.deg2rad(-50)
-        j4 = np.deg2rad(-90)
-        j5 = np.deg2rad(+0)
-
+        # Natural-looking fixed start pose.
+        j0 = np.deg2rad(0)
+        j1 = np.deg2rad(-100)
+        j2 = np.deg2rad(100)
+        j3 = np.deg2rad(-90)
+        j4 = np.deg2rad(90)
+        j5 = np.deg2rad(180)
         self._agent_joint_values = np.array([j0, j1, j2, j3, j4, j5], dtype=np.float64)
-        """j0 = np.deg2rad(+0)
-        j1 = np.deg2rad(-110)
-        j2 = np.deg2rad(+65)
-        j3 = np.deg2rad(-200)
-        j4 = np.deg2rad(-90)
-        j5 = np.deg2rad(+0)
-        self._agent_joint_values = np.array([j0, j1, j2, j3, j4, j5], dtype=np.float64)"""
 
-        # Move target sideways and slightly higher to make side hits physically easier.
+        # Side-biased target position.
         x = 0.85
-        y = 0.20
-        z = 0.70
-        self.model.body("bottle").pos = [x, y, z]
-        mujoco.mj_forward(self.model, self.data)
-        self._target_position = self.data.xpos[self.model.body("bottle").id].copy()
-        self._whip_target_contact = False
+        y = 0.35
+        z = 0.55
+        self.model.site("site_object").pos = [x, y, z]
+        self._target_position = self.model.site("site_object").pos.copy()
 
         self.data.qpos[:6] = self._agent_joint_values
         self.data.ctrl[:6] = self._agent_joint_values
@@ -366,7 +250,7 @@ class WhipWorldEnv(gym.Env):
 
         # Let the whip settle downward naturally before the episode starts.
         # Whip-ground contact is allowed and not penalized.
-        settle_steps = 750
+        settle_steps = 1500
         for _ in range(settle_steps):
             self.data.ctrl[:6] = self._agent_joint_values
             mujoco.mj_step(self.model, self.data)
@@ -401,7 +285,6 @@ class WhipWorldEnv(gym.Env):
         self._arm_self_contact = False
         self._bad_top_down_hit = False
         self._valid_side_hit = False
-        self._whip_target_contact = self._whip_target_contact_detected()
 
         for i in range(6):
             ctrl_index = self.ROBOT_JOINT_ID[i] - 1
@@ -427,8 +310,7 @@ class WhipWorldEnv(gym.Env):
 
         self._arm_tip_position = self.data.xpos[self.model.body(END_EFFECTOR_NAME).id].copy()
         self._agent_joint_values = self.data.qpos[:6].copy()
-        self._target_position = self.data.xpos[self.model.body("bottle").id].copy()
-        self._whip_target_contact = self._whip_target_contact_detected()
+        self._target_position = self.model.site("site_object").pos.copy()
         self._whip_velocity = self.data.cvel[self.model.body(WHIP_END_NAME).id][:3].copy()
 
         self._distance_to_target = np.linalg.norm(self._whip_position - self._target_position)
@@ -445,37 +327,24 @@ class WhipWorldEnv(gym.Env):
         # IMPORTANT:
         # The whip touching the ground is not a failure.
         # Only the UR5e arm tip/end-effector touching ground or robot self-contact is a failure.
-        # Give a tiny grace period after reset, but then enforce robot-ground safety.
-        safety_check_enabled = self._current_loop > 300  # 0.3 seconds
-
-        self._arm_tip_ground_hit = bool(
-            safety_check_enabled and self._arm_tip_position[2] < 0.10
-        )
-
-        self._robot_ground_contact = bool(
-            safety_check_enabled and self._robot_ground_contact_detected()
-        )
-
-        self._arm_self_contact = bool(
-            safety_check_enabled and self._robot_self_contact_detected()
-        )
+        self._arm_tip_ground_hit = bool(self._arm_tip_position[2] < 0.03)
+        self._arm_self_contact = bool(self._robot_self_contact_detected())
 
         self._valid_side_hit = bool(
-            self._whip_target_contact
+            self._distance_to_target < 0.08
             and horizontal_speed > 1.5 * vertical_speed
             and self._whip_velocity[2] > -0.5
         )
 
         terminated = False
         if TASK == WHIP_TASK:
-            close_hit = self._whip_target_contact
-            terminated = close_hit
+            terminated = self._valid_side_hit
 
         truncated = False
         if self._current_loop >= self._num_loops:
             truncated = True
 
-        if self._arm_tip_ground_hit or self._robot_ground_contact or self._arm_self_contact:
+        if self._arm_tip_ground_hit or self._arm_self_contact:
             truncated = True
 
         reward = self.calc_reward()

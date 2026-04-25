@@ -5,7 +5,7 @@ import numpy as np
 
 headless = False
 
-MJCF_PATH = os.path.expanduser("~") + "/ros2_ws/src/ur5e_whip/mujoco_simulator/ur5e_whip_near_accurate.xml"
+MJCF_PATH = "/home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator/ur5e_whip_near_accurate_fixed.xml"
 
 if not os.path.exists(MJCF_PATH):
     raise FileNotFoundError(f"Could not find MJCF file: {MJCF_PATH}")

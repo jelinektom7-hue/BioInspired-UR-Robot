@@ -1,3 +1,11 @@
+Run a training session:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning
+python SAC_trainer.py
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 Open TensorBoard for checking on progress:
 
 source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
@@ -8,6 +16,7 @@ python -m tensorboard.main --logdir /home/dragos/ros2_ws/src/BioInspired-UR-Robo
 
 Run on browser: http://localhost:6006/
 
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 Check a checkpoint:
 
@@ -18,5 +27,54 @@ change the line in file SAC_evaluator
 
 MODEL_FILE = os.path.expanduser("~") + "/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_models_my_run/rl_model_1000000_steps.zip"
 
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
 cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning
 python SAC_evaluator.py
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Check starting position:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/gymnasium_env_lib
+pip install -e .
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main
+python reinforcement_learning/env_tester.py
+
+
+
+After big changes in whip_world.py:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/gymnasium_env_lib
+pip install -e .
+
+
+
+Change Initial Positions:
+
+# Fixed start pose. Keep this stable for the first side-hit training runs.
+        j0 = np.deg2rad(+0)
+        j1 = np.deg2rad(-110)
+        j2 = np.deg2rad(+65)
+        j3 = np.deg2rad(-50)
+        j4 = np.deg2rad(-90)
+        j5 = np.deg2rad(+0)
+
+        self._agent_joint_values = np.array([j0, j1, j2, j3, j4, j5], dtype=np.float64)
+        """j0 = np.deg2rad(+0)
+        j1 = np.deg2rad(-110)
+        j2 = np.deg2rad(+65)
+        j3 = np.deg2rad(-200)
+        j4 = np.deg2rad(-90)
+        j5 = np.deg2rad(+0)
+        self._agent_joint_values = np.array([j0, j1, j2, j3, j4, j5], dtype=np.float64)"""
+
+        # Move target sideways and slightly higher to make side hits physically easier.
+        x = 0.85
+        y = 0
+        z = 0.55
+        self.model.site("site_object").pos = [x, y, z]
+        self._target_position = self.model.site("site_object").pos.copy()

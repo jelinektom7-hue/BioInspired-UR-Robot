@@ -34,3 +34,20 @@ for i in range (100_000):
             )
 
 env.close()
+
+"""import gymnasium as gym
+import gymnasium_env
+import time
+
+ENVIRONMENT = "gymnasium_env/WhipWorld-v0"
+
+env = gym.make(ENVIRONMENT, render_mode="human")
+observation, info = env.reset()
+
+print("Initial observation:", observation)
+print("Initial info:", info)
+print("Viewer is open. Press Ctrl+C when done.")
+
+while True:
+    env.render()
+    time.sleep(0.05)"""

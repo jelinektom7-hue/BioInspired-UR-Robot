@@ -8,7 +8,7 @@ import gymnasium_env
 
 ENVIRONMENT = 'gymnasium_env/WhipWorld-v0'
 
-MODEL_FILE = os.path.expanduser("~") + "/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_1/rl_model_1000000_steps.zip"
+MODEL_FILE = os.path.expanduser("~") + "/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_models_my_run/rl_model_500000_steps.zip"
 
 
 # Load environment
