@@ -2,15 +2,22 @@ import mujoco
 import mujoco.viewer
 import os
 import numpy as np
+from pathlib import Path
 
 headless = False
 
-MJCF_PATH = "/home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator/ur5e_whip_near_accurate_fixed.xml"
+# Path to this folder
+SCRIPT_DIR = Path(__file__).resolve().parent
 
-if not os.path.exists(MJCF_PATH):
+# Path to MJCF file
+MJCF_PATH = SCRIPT_DIR / "ur5e_whip_near_accurate_fixed.xml"
+
+# Ensure MJCF file exists
+if not MJCF_PATH.exists():
+
     raise FileNotFoundError(f"Could not find MJCF file: {MJCF_PATH}")
 
-model = mujoco.MjModel.from_xml_path(MJCF_PATH)
+model = mujoco.MjModel.from_xml_path(str(MJCF_PATH))
 data = mujoco.MjData(model)
 
 robot_ids = {
