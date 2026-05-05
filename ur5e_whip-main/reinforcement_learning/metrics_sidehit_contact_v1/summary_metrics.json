@@ -1,0 +1,21 @@
+{
+  "model_file": "/home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/frozen_runs/sidehit_contact_v1/checkpoints/rl_model_970000_steps.zip",
+  "episodes": 100,
+  "contact_success_rate": 0.0,
+  "valid_side_hit_rate": 0.0,
+  "bad_top_down_hit_rate": 0.05,
+  "arm_tip_ground_failure_rate": 0.0,
+  "robot_ground_contact_rate": 0.02,
+  "arm_self_contact_rate": 0.0,
+  "truncation_rate": 1.0,
+  "mean_total_reward": 349.06825747290424,
+  "mean_steps": 249.93,
+  "mean_elapsed_time": 2.4993,
+  "mean_time_to_first_contact": NaN,
+  "mean_min_distance": 0.30121597459598454,
+  "mean_final_distance": 0.9478461960375572,
+  "outcome_counts": {
+    "timeout_or_miss": 98,
+    "robot_ground_failure": 2
+  }
+}
