@@ -9,7 +9,7 @@ from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Point
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 
@@ -85,16 +85,16 @@ class MujocoCameraBridge(Node):
         self.bridge = CvBridge()
 
         self.rgb_pub = self.create_publisher(
-            Image, "/camera/camera/color/image_raw", 10
+            Image, "/sim/camera/color/image_raw", 10
         )
         self.depth_pub = self.create_publisher(
-            Image, "/camera/camera/aligned_depth_to_color/image_raw", 10
+            Image, "/sim/camera/depth/image_raw", 10
         )
         self.rgb_info_pub = self.create_publisher(
-            CameraInfo, "/camera/camera/color/camera_info", 10
+            CameraInfo, "/sim/camera/color/camera_info", 10
         )
         self.depth_info_pub = self.create_publisher(
-            CameraInfo, "/camera/camera/aligned_depth_to_color/camera_info", 10
+            CameraInfo, "/sim/camera/depth/camera_info", 10
         )
 
         self.cam_id = mujoco.mj_name2id(
@@ -104,6 +104,23 @@ class MujocoCameraBridge(Node):
             raise RuntimeError(
                 f'Camera "{self.camera_name}" not found in {self.model_path}'
             )
+        
+        # Ground-truth target body in MuJoCo.
+        # In this project the fixed target is the body named "bottle".
+        self.target_body_id = mujoco.mj_name2id(
+            self.model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            "bottle"
+        )
+
+        if self.target_body_id < 0:
+            raise RuntimeError('Body "bottle" not found in MuJoCo model')
+
+        self.gt_pub = self.create_publisher(
+            Point,
+            "/target_position_world",
+            10
+        )
 
         self.fovy_deg = float(self.model.cam_fovy[self.cam_id])
         self.fx, self.fy, self.cx, self.cy = self.compute_intrinsics(
@@ -227,6 +244,15 @@ class MujocoCameraBridge(Node):
     def timer_callback(self):
         for _ in range(self.steps_per_frame):
             mujoco.mj_step(self.model, self.data)
+
+        gt = self.data.xpos[self.target_body_id]
+
+        gt_msg = Point()
+        gt_msg.x = float(gt[0])
+        gt_msg.y = float(gt[1])
+        gt_msg.z = float(gt[2])
+
+        self.gt_pub.publish(gt_msg)
 
         self.rgb_renderer.update_scene(self.data, camera=self.camera_name)
         rgb = self.rgb_renderer.render()

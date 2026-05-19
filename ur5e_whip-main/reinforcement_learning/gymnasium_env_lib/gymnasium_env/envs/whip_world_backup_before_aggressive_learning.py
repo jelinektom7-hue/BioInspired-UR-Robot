@@ -1,0 +1,1006 @@
+import gymnasium as gym
+import numpy as np
+import os
+import mujoco
+import mujoco.viewer
+
+
+WHIP_END_NAME = "whip_end"
+END_EFFECTOR_NAME = "whip_start"
+
+REACH_TASK = "reach"
+WHIP_TASK = "whip"
+
+TASK = WHIP_TASK
+
+
+# ============================================================
+# MAIN SIMULATION PARAMETERS - edit these first
+# ============================================================
+# One policy step applies ACTION_LIMIT_RAD to each UR joint target, then MuJoCo
+# advances MUJOCO_STEPS_PER_ACTION * MUJOCO_STEP_SIZE seconds.
+MUJOCO_STEPS_PER_ACTION = 10
+MUJOCO_STEP_SIZE = 0.001
+EPISODE_TIME_LIMIT_S = 2.5
+ACTION_LIMIT_RAD = 0.03
+SETTLE_STEPS = 750
+
+# ============================================================
+# WHIP / ROPE PHYSICS OVERRIDES - edit these to tune rope behavior
+# ============================================================
+# These values override the rope hinge joints after the XML is loaded.
+# They do not require editing the XML. Restart the evaluator/trainer after
+# changing them.
+APPLY_ROPE_PHYSICS_OVERRIDES = True
+ROPE_JOINT_NAME_PREFIXES = ("J0_", "J1_")
+
+# Smaller = more flexible. The previous 40-segment rope was still too stiff,
+# so these are intentionally much lower than the generated XML values.
+ROPE_JOINT_STIFFNESS = 0.00025
+ROPE_JOINT_DAMPING = 0.00050
+
+# Optional mass scaling for rope segment bodies named N00, N01, ... and whip_end.
+# Keep at 1.0 unless you specifically want a heavier/lighter rope.
+APPLY_ROPE_MASS_SCALE = True
+ROPE_BODY_MASS_SCALE = 1.5
+
+# Remove inherited hinge inertia/friction from the generic XML default.
+# This helps the rope sag/fall under gravity instead of behaving like a stiff arm.
+APPLY_ROPE_ARMATURE_OVERRIDE = True
+ROPE_JOINT_ARMATURE = 0.0
+APPLY_ROPE_FRICTIONLOSS_OVERRIDE = True
+ROPE_JOINT_FRICTIONLOSS = 0.0
+
+# Tuning suggestions:
+#   very limp rope:       stiffness=0.00000, damping=0.00030, mass_scale=1.5
+#   current soft default: stiffness=0.00025, damping=0.00050, mass_scale=1.5
+#   slightly stiffer:     stiffness=0.00100, damping=0.00100, mass_scale=1.2
+#   much stiffer:         stiffness=0.00400, damping=0.00200, mass_scale=1.0
+
+# ============================================================
+# REWARD ADDITIONS ON TOP OF THE ORIGINAL SIDE-HIT STYLE REWARD
+# ============================================================
+# Keep these tiny. They should guide behavior, not dominate hit/side-hit rewards.
+MULTI_JOINT_REWARD_WEIGHT = 0.02
+ACTIVE_ACTION_THRESHOLD_RAD = 0.003
+
+# Soft-only speed awareness. This is not an action clamp. It only applies a tiny
+# penalty when simulated joint velocity exceeds the UR5e reference speed.
+UR5E_MAX_JOINT_SPEED_RAD_S = np.pi
+UR5E_SPEED_EXCESS_PENALTY_WEIGHT = 0.001
+
+# Extra learning signal for the harder target-randomized, flexible-rope task.
+# These are intentionally smaller than the true hit/side-hit rewards; they only
+# teach the policy that close misses are useful during exploration.
+NEAR_HIT_BONUS_25CM = 5.0
+NEAR_HIT_BONUS_18CM = 15.0
+NEAR_HIT_BONUS_12CM = 35.0
+NEAR_HIT_BONUS_08CM = 75.0
+
+# ============================================================
+# TARGET RANDOMIZATION / REACHABLE TRAINING REGION CONFIGURATION
+# ============================================================
+# This is the target-conditioned policy workspace in the SIMULATION frame.
+#
+# The original approximate real-life box was centered around [1.30, -0.50, 0.80].
+# That creates far-corner targets that are likely outside a conservative whip-strike
+# range. Since the physical ball can be moved closer to the robot, the training
+# cube below keeps the full requested 50 cm x 50 cm x 50 cm volume, but centers it
+# closer to the already-proven fixed-target area. The old fixed target
+# [0.85, -0.40, 0.70] remains inside this cube.
+#
+# Training region = full intersection of:
+#   1) this 50 cm cube, and
+#   2) a conservative geometric whip-strike annulus around the robot base.
+#
+# This is not a curriculum: the environment samples the full reachable region from
+# the first training step.
+TARGET_RANDOMIZATION_ENABLED = True
+TARGET_CENTER = np.array([1.10, -0.45, 0.80], dtype=np.float64)
+TARGET_BOX_SIZE = np.array([0.50, 0.50, 0.50], dtype=np.float64)
+TARGET_BOX_HALF_SIZE = TARGET_BOX_SIZE / 2.0
+TARGET_LOW = TARGET_CENTER - TARGET_BOX_HALF_SIZE
+TARGET_HIGH = TARGET_CENTER + TARGET_BOX_HALF_SIZE
+
+# Conservative geometric strike range in the simulation XY plane.
+# This rejects targets that are inside the physical box but too close/far from the
+# base to be useful for whip striking. With the moved-closer cube above, the full
+# cube lies inside these limits, but the check stays active for validation and for
+# future box edits.
+TARGET_REACH_FILTER_ENABLED = True
+TARGET_STRIKE_ORIGIN_XY = np.array([0.0, 0.0], dtype=np.float64)
+TARGET_MIN_RADIUS_XY = 0.80
+TARGET_MAX_RADIUS_XY = 1.55
+TARGET_REJECTION_SAMPLE_LIMIT = 2000
+
+# Keep this as a fallback/debug target.
+FIXED_TARGET_POSITION = TARGET_CENTER.copy()
+
+# The target represents a fixed ball/target in the real setup.
+# Even if the XML contains a free joint for the bottle, the environment
+# locks it to the sampled episode position during every simulation step.
+LOCK_TARGET_DURING_EPISODE = True
+
+
+class WhipWorldEnv(gym.Env):
+    metadata = {"render_modes": ["human"], "render_fps": 4}
+
+    def __init__(self, render_mode=None):
+        MJCF_PATH = os.path.expanduser("~") + "/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator/ur5e_whip_near_accurate_fixed.xml"
+
+        if not os.path.exists(MJCF_PATH):
+            print("Error! Path does not exist:", MJCF_PATH, "Working directory at:", os.getcwd())
+            exit()
+
+        self.model = mujoco.MjModel.from_xml_path(MJCF_PATH)
+        self._apply_rope_physics_overrides()
+        self.data = mujoco.MjData(self.model)
+
+        self.MUJOCO_STEPS_PR_ACTION = MUJOCO_STEPS_PER_ACTION
+        self.MUJOCO_STEP_SIZE = MUJOCO_STEP_SIZE
+        self.model.opt.timestep = self.MUJOCO_STEP_SIZE
+        self.FULL_TIME = EPISODE_TIME_LIMIT_S
+        self._num_loops = int(self.FULL_TIME / self.model.opt.timestep)
+        self._current_loop = 0
+        self._robot_ground_contact = False
+        self._whip_target_contact = False
+        self._prev_distance_to_target = np.inf
+
+        # Target-conditioned training settings. The target is randomized at reset()
+        # unless reset(options={"target_position": [x, y, z]}) is used for a
+        # deterministic export/evaluation rollout.
+        self.target_randomization_enabled = TARGET_RANDOMIZATION_ENABLED
+        self.target_center = TARGET_CENTER.copy()
+        self.target_box_size = TARGET_BOX_SIZE.copy()
+        self.target_low = TARGET_LOW.copy()
+        self.target_high = TARGET_HIGH.copy()
+        self.target_reach_filter_enabled = TARGET_REACH_FILTER_ENABLED
+        self.target_strike_origin_xy = TARGET_STRIKE_ORIGIN_XY.copy()
+        self.target_min_radius_xy = TARGET_MIN_RADIUS_XY
+        self.target_max_radius_xy = TARGET_MAX_RADIUS_XY
+        self.fixed_target_position = FIXED_TARGET_POSITION.copy()
+        self._last_target_was_randomized = False
+        self.lock_target_during_episode = LOCK_TARGET_DURING_EPISODE
+        self._episode_target_position = self.fixed_target_position.copy()
+
+        # Real-robot speed reference for soft reward shaping only.
+        # UR5e documentation gives max joint speed as 180 deg/s = pi rad/s
+        # for every axis. This is NOT a hard action filter; the policy keeps
+        # the original fast action behavior and only receives a tiny penalty
+        # if simulated joint velocities exceed the documented limit.
+        self.CONTROL_DT = self.MUJOCO_STEPS_PR_ACTION * self.MUJOCO_STEP_SIZE
+        self.UR5E_MAX_JOINT_SPEED_RAD_S = np.full(6, np.pi, dtype=np.float64)
+
+        # Very small whole-arm participation shaping. This should not dominate
+        # hit reward, side-hit reward, progress reward, or safety penalties.
+        self.MOBILITY_ACTIVE_JOINT_SPEED_RAD_S = ACTIVE_ACTION_THRESHOLD_RAD
+
+        self.min_joint_values = [-2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi, -2*np.pi]
+        self.max_joint_values = [2*np.pi, 2*np.pi, 2*np.pi, 2*np.pi, 2*np.pi, 2*np.pi]
+
+        self.observation_space = gym.spaces.Dict(
+            {
+                "agent_joint_values": gym.spaces.Box(
+                    low=np.array(self.min_joint_values),
+                    high=np.array(self.max_joint_values),
+                    shape=(6,),
+                    dtype=np.float64,
+                ),
+                "agent_joint_velocities": gym.spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(6,),
+                    dtype=np.float64,
+                ),
+                "target_position": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64),
+                "whip_position": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64),
+                "whip_velocity": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64),
+                "target_relative_to_whip": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64),
+                "target_relative_to_arm_tip": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64),
+            }
+        )
+
+        self.action_space = gym.spaces.Box(low=-ACTION_LIMIT_RAD, high=ACTION_LIMIT_RAD, shape=(6,), dtype=np.float64)
+
+        self._agent_joint_values = np.zeros(6, dtype=np.float64)
+        self._agent_joint_velocities = np.zeros(6, dtype=np.float64)
+        self._target_position = np.zeros(3, dtype=np.float64)
+        self._whip_position = np.zeros(3, dtype=np.float64)
+        self._whip_position_old = np.zeros(3, dtype=np.float64)
+        self._arm_tip_position = np.zeros(3, dtype=np.float64)
+        self._target_relative_to_whip = np.zeros(3, dtype=np.float64)
+        self._target_relative_to_arm_tip = np.zeros(3, dtype=np.float64)
+        self._distance_to_target = np.inf
+        self._shortest_distance_to_target = np.inf
+        self._whip_velocity = np.zeros(3, dtype=np.float64)
+        self._prev_action = np.zeros(6, dtype=np.float64)
+        self._last_action = np.zeros(6, dtype=np.float64)
+        self._raw_action = np.zeros(6, dtype=np.float64)
+        self._action_clip_excess = np.zeros(6, dtype=np.float64)
+        self._prev_joint_command = np.zeros(6, dtype=np.float64)
+        self._last_joint_command = np.zeros(6, dtype=np.float64)
+        self._prev_command_velocity = np.zeros(6, dtype=np.float64)
+        self._last_command_velocity = np.zeros(6, dtype=np.float64)
+        self._prev_command_acceleration = np.zeros(6, dtype=np.float64)
+        self._last_command_acceleration = np.zeros(6, dtype=np.float64)
+        self._last_command_jerk = np.zeros(6, dtype=np.float64)
+        self._active_joint_count = 0
+        self._shoulder_speed_fraction = 0.0
+
+        self._arm_tip_ground_hit = False
+        self._arm_self_contact = False
+        self._bad_top_down_hit = False
+        self._valid_side_hit = False
+
+        assert render_mode is None or render_mode in self.metadata["render_modes"]
+        self.render_mode = render_mode
+
+        if self.render_mode == "human":
+            self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+        else:
+            self.viewer = None
+
+        self.ROBOT_JOINT_ID = {
+            0: self.model.body("base").id,
+            1: self.model.body("shoulder_link").id,
+            2: self.model.body("upper_arm_link").id,
+            3: self.model.body("forearm_link").id,
+            4: self.model.body("wrist_1_link").id,
+            5: self.model.body("wrist_2_link").id,
+            6: self.model.body("wrist_3_link").id,
+        }
+
+        self.ROBOT_BODY_NAMES = {
+            "base",
+            "shoulder_link",
+            "upper_arm_link",
+            "forearm_link",
+            "wrist_1_link",
+            "wrist_2_link",
+            "wrist_3_link",
+        }
+
+
+
+    def _apply_rope_physics_overrides(self):
+        """
+        Override rope hinge stiffness/damping directly in the MuJoCo model.
+
+        The XML still defines the geometry and segment count. These top-level
+        Python constants let you quickly tune how soft the rope feels without
+        manually editing 40/80 XML joint entries.
+        """
+        if not APPLY_ROPE_PHYSICS_OVERRIDES:
+            return
+
+        changed_joints = 0
+
+        for joint_id in range(self.model.njnt):
+            joint_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+
+            if joint_name is None:
+                continue
+
+            if not joint_name.startswith(ROPE_JOINT_NAME_PREFIXES):
+                continue
+
+            # Spring stiffness pulls the rope back toward the straight XML pose.
+            # Keep this extremely low for a rope-like hanging whip.
+            self.model.jnt_stiffness[joint_id] = ROPE_JOINT_STIFFNESS
+
+            dof_adr = self.model.jnt_dofadr[joint_id]
+            if dof_adr >= 0:
+                self.model.dof_damping[dof_adr] = ROPE_JOINT_DAMPING
+
+                if APPLY_ROPE_ARMATURE_OVERRIDE:
+                    self.model.dof_armature[dof_adr] = ROPE_JOINT_ARMATURE
+
+                if APPLY_ROPE_FRICTIONLOSS_OVERRIDE:
+                    self.model.dof_frictionloss[dof_adr] = ROPE_JOINT_FRICTIONLOSS
+
+            changed_joints += 1
+
+        if APPLY_ROPE_MASS_SCALE and abs(ROPE_BODY_MASS_SCALE - 1.0) > 1e-9:
+            for body_id in range(self.model.nbody):
+                body_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+                if body_name is None:
+                    continue
+                if body_name == WHIP_END_NAME or (len(body_name) == 3 and body_name.startswith("N") and body_name[1:].isdigit()):
+                    self.model.body_mass[body_id] *= ROPE_BODY_MASS_SCALE
+                    self.model.body_inertia[body_id] *= ROPE_BODY_MASS_SCALE
+
+        if changed_joints == 0:
+            print("WARNING: No rope joints matched ROPE_JOINT_NAME_PREFIXES.")
+        else:
+            print(
+                f"Applied rope physics overrides to {changed_joints} joints: "
+                f"stiffness={ROPE_JOINT_STIFFNESS}, damping={ROPE_JOINT_DAMPING}, "
+                f"mass_scale={ROPE_BODY_MASS_SCALE}, armature={ROPE_JOINT_ARMATURE}, "
+                f"frictionloss={ROPE_JOINT_FRICTIONLOSS}"
+            )
+
+    def _target_radius_xy(self, target_position):
+        target_position = np.array(target_position, dtype=np.float64)
+        delta_xy = target_position[:2] - self.target_strike_origin_xy
+        return float(np.linalg.norm(delta_xy))
+
+    def _target_inside_training_region(self, target_position):
+        """Return True if target is inside the cube/reach intersection."""
+        target_position = np.array(target_position, dtype=np.float64)
+
+        inside_box = bool(
+            np.all(target_position >= self.target_low - 1e-9)
+            and np.all(target_position <= self.target_high + 1e-9)
+        )
+
+        if not inside_box:
+            return False
+
+        if not self.target_reach_filter_enabled:
+            return True
+
+        radius_xy = self._target_radius_xy(target_position)
+        return bool(
+            self.target_min_radius_xy - 1e-9 <= radius_xy <= self.target_max_radius_xy + 1e-9
+        )
+
+    def _sample_target_position(self):
+        """Sample uniformly from box ∩ conservative whip-strike region."""
+        for _ in range(TARGET_REJECTION_SAMPLE_LIMIT):
+            candidate = self.np_random.uniform(self.target_low, self.target_high).astype(np.float64)
+            if self._target_inside_training_region(candidate):
+                return candidate
+
+        raise RuntimeError(
+            "Could not sample a target inside the configured training region. "
+            "Check TARGET_CENTER, TARGET_BOX_SIZE, and target radius limits."
+        )
+
+    def _format_target_region_error(self, target):
+        radius_xy = self._target_radius_xy(target)
+        return (
+            f"target {target.tolist()} is outside the training region. "
+            f"Box low={self.target_low.tolist()}, high={self.target_high.tolist()}, "
+            f"radius_xy={radius_xy:.3f}, allowed_radius=[{self.target_min_radius_xy:.3f}, "
+            f"{self.target_max_radius_xy:.3f}]"
+        )
+
+    def _resolve_target_position_from_options(self, options):
+        """
+        Choose the target position for the next episode.
+
+        - During training, reset() samples from the full cube/reach intersection.
+        - During deterministic export, use reset(options={"target_position": [x, y, z]}).
+        - Explicit targets are validated against the same training region so real
+          vision cannot accidentally request an out-of-distribution strike.
+        """
+        if options is not None and "target_position" in options:
+            target = np.array(options["target_position"], dtype=np.float64)
+            if target.shape != (3,):
+                raise ValueError(
+                    "reset(options={'target_position': ...}) must provide exactly 3 values: [x, y, z]"
+                )
+            if not self._target_inside_training_region(target):
+                raise ValueError(self._format_target_region_error(target))
+            self._last_target_was_randomized = False
+            return target
+
+        if self.target_randomization_enabled:
+            self._last_target_was_randomized = True
+            return self._sample_target_position()
+
+        if not self._target_inside_training_region(self.fixed_target_position):
+            raise ValueError(self._format_target_region_error(self.fixed_target_position))
+
+        self._last_target_was_randomized = False
+        return self.fixed_target_position.copy()
+
+    def _set_bottle_position(self, target_position):
+        """
+        Move the target body named 'bottle' to target_position.
+
+        The XML target has a free joint, so setting only model.body('bottle').pos
+        is not always enough after mj_resetData(). This helper handles both free
+        joint and non-free-body versions robustly.
+        """
+        target_position = np.array(target_position, dtype=np.float64)
+        if target_position.shape != (3,):
+            raise ValueError("target_position must be a 3-vector [x, y, z]")
+
+        bottle_id = self.model.body("bottle").id
+        jnt_adr = self.model.body_jntadr[bottle_id]
+
+        if jnt_adr >= 0:
+            qpos_adr = self.model.jnt_qposadr[jnt_adr]
+            joint_type = self.model.jnt_type[jnt_adr]
+
+            if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+                # Free joint qpos format: x, y, z, qw, qx, qy, qz
+                self.data.qpos[qpos_adr:qpos_adr + 3] = target_position
+                self.data.qpos[qpos_adr + 3:qpos_adr + 7] = [1.0, 0.0, 0.0, 0.0]
+
+                dof_adr = self.model.jnt_dofadr[jnt_adr]
+                self.data.qvel[dof_adr:dof_adr + 6] = 0.0
+            else:
+                self.model.body_pos[bottle_id] = target_position
+        else:
+            self.model.body_pos[bottle_id] = target_position
+
+        mujoco.mj_forward(self.model, self.data)
+        self._target_position = self.data.xpos[bottle_id].copy()
+        return self._target_position.copy()
+
+    def _lock_episode_target(self):
+        """
+        Keep the ball fixed at the sampled target position for the entire episode.
+
+        The XML target may have a free joint for old experiments. For this target-
+        conditioned setup the real ball is a fixed target, so every step resets the
+        bottle free-joint qpos/qvel to the sampled position. Contact is still detected;
+        the target simply does not get pushed away or fall under gravity.
+        """
+        if not self.lock_target_during_episode:
+            return
+
+        self._set_bottle_position(self._episode_target_position)
+
+    def _update_derived_observation_values(self):
+        """Update observation terms that make target-conditioned learning easier.
+
+        The original environment only exposed absolute joint/target/whip positions.
+        For a moving target distribution, the policy learns faster if it directly
+        sees relative target geometry and the current motion state.
+        """
+        self._agent_joint_velocities = self.data.qvel[:6].copy()
+        self._target_relative_to_whip = self._target_position - self._whip_position
+        self._target_relative_to_arm_tip = self._target_position - self._arm_tip_position
+
+    def _get_obs(self):
+        return {
+            "agent_joint_values": self._agent_joint_values,
+            "agent_joint_velocities": self._agent_joint_velocities,
+            "target_position": self._target_position,
+            "whip_position": self._whip_position,
+            "whip_velocity": self._whip_velocity,
+            "target_relative_to_whip": self._target_relative_to_whip,
+            "target_relative_to_arm_tip": self._target_relative_to_arm_tip,
+        }
+
+    def _get_info(self):
+        elapsed_time = self._current_loop * self.MUJOCO_STEP_SIZE
+        distance = np.linalg.norm(self._whip_position - self._target_position)
+        return {
+            "elapsed time [s]": elapsed_time,
+            "distance": distance,
+            "shortest_distance": float(self._shortest_distance_to_target),
+            "target_relative_to_whip_x": float(self._target_relative_to_whip[0]),
+            "target_relative_to_whip_y": float(self._target_relative_to_whip[1]),
+            "target_relative_to_whip_z": float(self._target_relative_to_whip[2]),
+            "target_relative_to_arm_tip_x": float(self._target_relative_to_arm_tip[0]),
+            "target_relative_to_arm_tip_y": float(self._target_relative_to_arm_tip[1]),
+            "target_relative_to_arm_tip_z": float(self._target_relative_to_arm_tip[2]),
+            "target_x": float(self._target_position[0]),
+            "target_y": float(self._target_position[1]),
+            "target_z": float(self._target_position[2]),
+            "target_radius_xy": float(self._target_radius_xy(self._target_position)),
+            "target_randomized": bool(self._last_target_was_randomized),
+            "target_inside_training_region": bool(self._target_inside_training_region(self._target_position)),
+            "target_box_low_x": float(self.target_low[0]),
+            "target_box_low_y": float(self.target_low[1]),
+            "target_box_low_z": float(self.target_low[2]),
+            "target_box_high_x": float(self.target_high[0]),
+            "target_box_high_y": float(self.target_high[1]),
+            "target_box_high_z": float(self.target_high[2]),
+            "target_min_radius_xy": float(self.target_min_radius_xy),
+            "target_max_radius_xy": float(self.target_max_radius_xy),
+            "arm_tip_ground_hit": self._arm_tip_ground_hit,
+            "arm_self_contact": self._arm_self_contact,
+            "bad_top_down_hit": self._bad_top_down_hit,
+            "robot_ground_contact": self._robot_ground_contact,
+            "valid_side_hit": self._valid_side_hit,
+            "whip_z": float(self._whip_position[2]),
+            "whip_vz": float(self._whip_velocity[2]),
+            "arm_tip_z": float(self._arm_tip_position[2]),
+            "active_joint_count": int(self._active_joint_count),
+            "shoulder_speed_fraction": float(self._shoulder_speed_fraction),
+            "max_command_velocity": float(np.max(np.abs(self._last_command_velocity))),
+            "max_command_acceleration": float(np.max(np.abs(self._last_command_acceleration))),
+            "max_command_jerk": float(np.max(np.abs(self._last_command_jerk))),
+            "max_measured_joint_velocity": float(np.max(np.abs(self.data.qvel[:6]))),
+        }
+    
+    def _robot_ground_contact_detected(self):
+        """
+        Detect if any UR5e robot body contacts the world/ground.
+
+        This ignores whip-ground contact. The whip is allowed to touch the floor.
+        """
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+
+            if geom1 < 0 or geom2 < 0:
+                continue
+
+            body1_id = self.model.geom_bodyid[geom1]
+            body2_id = self.model.geom_bodyid[geom2]
+
+            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id)
+            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id)
+
+            body1_is_robot = body1_name in self.ROBOT_BODY_NAMES
+            body2_is_robot = body2_name in self.ROBOT_BODY_NAMES
+
+            body1_is_world = body1_id == 0
+            body2_is_world = body2_id == 0
+
+            if (body1_is_robot and body2_is_world) or (body2_is_robot and body1_is_world):
+                return True
+
+        return False
+
+    def _robot_self_contact_detected(self):
+        """
+        Detect obvious UR5e self-contact from MuJoCo contacts.
+        This ignores the whip touching the ground.
+        """
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+
+            if geom1 < 0 or geom2 < 0:
+                continue
+
+            body1_id = self.model.geom_bodyid[geom1]
+            body2_id = self.model.geom_bodyid[geom2]
+
+            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id)
+            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id)
+
+            if body1_name in self.ROBOT_BODY_NAMES and body2_name in self.ROBOT_BODY_NAMES:
+                if body1_name != body2_name:
+                    return True
+
+        return False
+    
+    def _whip_target_contact_detected(self):
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+
+            if geom1 < 0 or geom2 < 0:
+                continue
+
+            body1_id = self.model.geom_bodyid[geom1]
+            body2_id = self.model.geom_bodyid[geom2]
+
+            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id)
+            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id)
+
+            if (
+                (body1_name == WHIP_END_NAME and body2_name == "bottle") or
+                (body2_name == WHIP_END_NAME and body1_name == "bottle")
+            ):
+                return True
+
+        return False
+    
+    def _whip_target_contact_detected(self):
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+
+            if geom1 < 0 or geom2 < 0:
+                continue
+
+            body1_id = self.model.geom_bodyid[geom1]
+            body2_id = self.model.geom_bodyid[geom2]
+
+            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id)
+            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id)
+
+            whip_hit = (
+                body1_name == WHIP_END_NAME and body2_name == "bottle"
+            ) or (
+                body2_name == WHIP_END_NAME and body1_name == "bottle"
+            )
+
+            if whip_hit:
+                return True
+
+        return False
+
+    def _apply_hardware_aware_action_filter(self, raw_action):
+        """
+        Keep the original fast SAC action behavior.
+
+        The previous hardware-aware filter clipped velocity/acceleration before
+        applying the action, which made the arm move too slowly. For training,
+        the policy again directly adds the SAC action to the joint position
+        controller target, like the older working environment. Real hardware
+        feasibility is encouraged only with a tiny reward penalty when measured
+        simulated joint velocity exceeds the documented UR5e speed limit.
+        """
+        raw_action = np.array(raw_action, dtype=np.float64)
+        self._raw_action = raw_action.copy()
+        self._action_clip_excess = np.zeros(6, dtype=np.float64)
+        return raw_action.copy()
+
+    def _update_command_safety_metrics(self, previous_command, new_command, applied_action):
+        previous_command = np.array(previous_command, dtype=np.float64)
+        new_command = np.array(new_command, dtype=np.float64)
+        applied_action = np.array(applied_action, dtype=np.float64)
+
+        dt = max(self.CONTROL_DT, 1e-9)
+
+        command_velocity = (new_command - previous_command) / dt
+        command_acceleration = (command_velocity - self._last_command_velocity) / dt
+        command_jerk = (command_acceleration - self._last_command_acceleration) / dt
+
+        self._prev_joint_command = previous_command.copy()
+        self._last_joint_command = new_command.copy()
+        self._prev_command_velocity = self._last_command_velocity.copy()
+        self._last_command_velocity = command_velocity.copy()
+        self._prev_command_acceleration = self._last_command_acceleration.copy()
+        self._last_command_acceleration = command_acceleration.copy()
+        self._last_command_jerk = command_jerk.copy()
+
+        abs_velocity = np.abs(command_velocity)
+        self._active_joint_count = int(np.sum(abs_velocity > self.MOBILITY_ACTIVE_JOINT_SPEED_RAD_S))
+
+        total_speed = float(np.sum(abs_velocity) + 1e-9)
+        shoulder_speed = float(abs_velocity[0] + abs_velocity[1])
+        self._shoulder_speed_fraction = shoulder_speed / total_speed
+
+    def calc_reward(self):
+        if TASK == REACH_TASK:
+            return -self._distance_to_target
+
+        if TASK != WHIP_TASK:
+            return 0.0
+
+        # -------------------------------------------------
+        # Original side-hit-style reward core
+        # -------------------------------------------------
+        distance_reward = 10.0 * np.exp(-5.0 * self._distance_to_target)
+        closest_reward = 20.0 * np.exp(-4.0 * self._shortest_distance_to_target)
+
+        # Extra sparse-reward assistance for the new flexible-rope, random-target
+        # task. This rewards close misses, so SAC gets a useful gradient before
+        # it learns true contact. The real hit and side-hit bonuses remain larger.
+        near_hit_bonus = 0.0
+        if self._shortest_distance_to_target < 0.25:
+            near_hit_bonus += NEAR_HIT_BONUS_25CM
+        if self._shortest_distance_to_target < 0.18:
+            near_hit_bonus += NEAR_HIT_BONUS_18CM
+        if self._shortest_distance_to_target < 0.12:
+            near_hit_bonus += NEAR_HIT_BONUS_12CM
+        if self._shortest_distance_to_target < 0.08:
+            near_hit_bonus += NEAR_HIT_BONUS_08CM
+
+        velocity_reward = 0.0
+        if self._distance_to_target < 0.5:
+            direction = self._target_position - self._whip_position
+            direction /= np.linalg.norm(direction) + 1e-6
+            velocity_toward = np.dot(self._whip_velocity, direction)
+            velocity_reward = 5.0 * max(0.0, velocity_toward)
+
+        side_reward = 0.0
+        mild_top_down_penalty = 0.0
+        if self._distance_to_target < 0.35:
+            horizontal_speed = np.linalg.norm(self._whip_velocity[:2])
+            vertical_speed = abs(self._whip_velocity[2]) + 1e-6
+            downward_speed = max(0.0, -self._whip_velocity[2])
+
+            side_reward = 4.0 * horizontal_speed / (horizontal_speed + vertical_speed + 1e-6)
+            mild_top_down_penalty = -3.0 * downward_speed
+
+        action_penalty = -0.05 * np.sum(np.square(self._last_action))
+        action_change_penalty = -0.10 * np.sum(np.square(self._last_action - self._prev_action))
+        joint_velocity_penalty = -0.01 * np.sum(np.square(self.data.qvel[:6]))
+
+        # -------------------------------------------------
+        # Tiny additions only: joint participation + UR5e speed awareness
+        # -------------------------------------------------
+        active_joint_count = int(np.sum(np.abs(self._last_action) > ACTIVE_ACTION_THRESHOLD_RAD))
+        multi_joint_reward = MULTI_JOINT_REWARD_WEIGHT * (active_joint_count / 6.0)
+
+        speed_ratio = np.abs(self.data.qvel[:6]) / (UR5E_MAX_JOINT_SPEED_RAD_S + 1e-9)
+        speed_excess = np.maximum(0.0, speed_ratio - 1.0)
+        ur5e_speed_penalty = -UR5E_SPEED_EXCESS_PENALTY_WEIGHT * np.sum(np.square(speed_excess))
+
+        # -------------------------------------------------
+        # Safety penalties
+        # -------------------------------------------------
+        safety_penalty = 0.0
+        if self._arm_tip_ground_hit:
+            safety_penalty -= 150.0
+        if self._arm_self_contact:
+            safety_penalty -= 150.0
+        if hasattr(self, "_robot_ground_contact") and self._robot_ground_contact:
+            safety_penalty -= 200.0
+
+        # -------------------------------------------------
+        # Hit and side-hit reward
+        # -------------------------------------------------
+        hit_bonus = 0.0
+        side_hit_bonus = 0.0
+
+        if self._whip_target_contact or self._distance_to_target < 0.10:
+            hit_bonus = 100.0
+
+            horizontal_speed = np.linalg.norm(self._whip_velocity[:2])
+            vertical_speed = abs(self._whip_velocity[2]) + 1e-6
+            is_side_motion = horizontal_speed > 1.5 * vertical_speed
+            not_strongly_downward = self._whip_velocity[2] > -0.5
+
+            if is_side_motion and not_strongly_downward:
+                side_hit_bonus = 400.0
+
+        time_penalty = -0.2
+
+        reward = (
+            distance_reward
+            + closest_reward
+            + near_hit_bonus
+            + velocity_reward
+            + side_reward
+            + mild_top_down_penalty
+            + action_penalty
+            + action_change_penalty
+            + joint_velocity_penalty
+            + multi_joint_reward
+            + ur5e_speed_penalty
+            + safety_penalty
+            + hit_bonus
+            + side_hit_bonus
+            + time_penalty
+        )
+
+        return float(reward)
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+
+        mujoco.mj_resetData(self.model, self.data)
+
+        self._current_loop = 0
+        self._whip_velocity = np.zeros(3, dtype=np.float64)
+        self._agent_joint_velocities = np.zeros(6, dtype=np.float64)
+        self._target_relative_to_whip = np.zeros(3, dtype=np.float64)
+        self._target_relative_to_arm_tip = np.zeros(3, dtype=np.float64)
+        self._shortest_distance_to_target = np.inf
+        self._distance_to_target = np.inf
+        self._prev_action = np.zeros(6, dtype=np.float64)
+        self._last_action = np.zeros(6, dtype=np.float64)
+        self._raw_action = np.zeros(6, dtype=np.float64)
+        self._action_clip_excess = np.zeros(6, dtype=np.float64)
+        self._prev_command_velocity = np.zeros(6, dtype=np.float64)
+        self._last_command_velocity = np.zeros(6, dtype=np.float64)
+        self._prev_command_acceleration = np.zeros(6, dtype=np.float64)
+        self._last_command_acceleration = np.zeros(6, dtype=np.float64)
+        self._last_command_jerk = np.zeros(6, dtype=np.float64)
+        self._active_joint_count = 0
+        self._shoulder_speed_fraction = 0.0
+        self._arm_tip_ground_hit = False
+        self._arm_self_contact = False
+        self._bad_top_down_hit = False
+        self._valid_side_hit = False
+        self._robot_ground_contact = False
+        self._whip_target_contact = False
+
+        # Fixed start pose. Keep this stable for the first side-hit training runs.
+        j0 = np.deg2rad(+0)
+        j1 = np.deg2rad(-110)
+        j2 = np.deg2rad(+85)
+        j3 = np.deg2rad(-50)
+        j4 = np.deg2rad(-90)
+        j5 = np.deg2rad(+0)
+
+        self._agent_joint_values = np.array([j0, j1, j2, j3, j4, j5], dtype=np.float64)
+        """j0 = np.deg2rad(+0)
+        j1 = np.deg2rad(-110)
+        j2 = np.deg2rad(+65)
+        j3 = np.deg2rad(-200)
+        j4 = np.deg2rad(-90)
+        j5 = np.deg2rad(+0)
+        self._agent_joint_values = np.array([j0, j1, j2, j3, j4, j5], dtype=np.float64)"""
+
+        # Target-conditioned training. During training the ball is sampled from
+        # the full intersection of the 50 cm cube and the conservative geometric
+        # whip-strike region. During export/evaluation a deterministic target can
+        # be supplied through reset(options={...}).
+        target_position = self._resolve_target_position_from_options(options)
+        self._episode_target_position = target_position.copy()
+        self._set_bottle_position(self._episode_target_position)
+        self._whip_target_contact = False
+
+        self._distance_to_target = np.linalg.norm(self._whip_position - self._target_position)
+        self._shortest_distance_to_target = self._distance_to_target
+        self._prev_distance_to_target = self._distance_to_target
+
+        self.data.qpos[:6] = self._agent_joint_values
+        self.data.ctrl[:6] = self._agent_joint_values
+        self._prev_joint_command = self.data.ctrl[:6].copy()
+        self._last_joint_command = self.data.ctrl[:6].copy()
+        mujoco.mj_forward(self.model, self.data)
+
+        # Let the whip settle downward naturally before the episode starts.
+        # Whip-ground contact is allowed and not penalized.
+        settle_steps = SETTLE_STEPS
+        for _ in range(settle_steps):
+            self.data.ctrl[:6] = self._agent_joint_values
+            if self.lock_target_during_episode:
+                self._lock_episode_target()
+            mujoco.mj_step(self.model, self.data)
+            if self.lock_target_during_episode:
+                self._lock_episode_target()
+
+        # Re-place the target after whip settling so the episode starts with
+        # the intended target position, not a target that drifted/fell during settle.
+        self._set_bottle_position(target_position)
+        self._whip_target_contact = False
+
+        self._current_loop = 0
+        self._prev_joint_command = self.data.ctrl[:6].copy()
+        self._last_joint_command = self.data.ctrl[:6].copy()
+        self._prev_command_velocity = np.zeros(6, dtype=np.float64)
+        self._last_command_velocity = np.zeros(6, dtype=np.float64)
+        self._prev_command_acceleration = np.zeros(6, dtype=np.float64)
+        self._last_command_acceleration = np.zeros(6, dtype=np.float64)
+        self._last_command_jerk = np.zeros(6, dtype=np.float64)
+        mujoco.mj_forward(self.model, self.data)
+
+        if TASK == WHIP_TASK:
+            self._whip_position = self.data.xpos[self.model.body(WHIP_END_NAME).id].copy()
+        elif TASK == REACH_TASK:
+            self._whip_position = self.data.xpos[self.model.body(END_EFFECTOR_NAME).id].copy()
+        else:
+            print("ERROR: NO TASK SELECTED")
+            exit()
+
+        self._arm_tip_position = self.data.xpos[self.model.body(END_EFFECTOR_NAME).id].copy()
+        self._whip_position_old = self._whip_position.copy()
+        self._update_derived_observation_values()
+
+        observation = self._get_obs()
+        info = self._get_info()
+
+        if self.render_mode == "human":
+            self._render_frame()
+
+        return observation, info
+
+    def step(self, action):
+        action = np.array(action, dtype=np.float64)
+        self._last_action = action.copy()
+        self._whip_position_old = self._whip_position.copy()
+        self._arm_tip_ground_hit = False
+        self._arm_self_contact = False
+        self._bad_top_down_hit = False
+        self._valid_side_hit = False
+
+        # Keep the target fixed during the episode if this helper exists in the
+        # target-randomized version of the environment.
+        if hasattr(self, "_lock_episode_target"):
+            self._lock_episode_target()
+
+        # ORIGINAL CONTROL BEHAVIOR:
+        # SAC action is directly added to the joint position controller targets.
+        # No velocity/acceleration/jerk filter is applied here.
+        for i in range(6):
+            ctrl_index = self.ROBOT_JOINT_ID[i] - 1
+            self.data.ctrl[ctrl_index] += action[i]
+            self.data.ctrl[ctrl_index] = np.clip(
+                self.data.ctrl[ctrl_index],
+                self.min_joint_values[i],
+                self.max_joint_values[i],
+            )
+
+        for _ in range(self.MUJOCO_STEPS_PR_ACTION):
+            self._current_loop += 1
+
+            if hasattr(self, "_lock_episode_target"):
+                self._lock_episode_target()
+
+            mujoco.mj_step(self.model, self.data)
+
+            # Capture target contact before locking the free target back in place.
+            if self._whip_target_contact_detected():
+                self._whip_target_contact = True
+
+            if hasattr(self, "_lock_episode_target"):
+                self._lock_episode_target()
+
+            mujoco.mj_forward(self.model, self.data)
+
+        if TASK == WHIP_TASK:
+            self._whip_position = self.data.xpos[self.model.body(WHIP_END_NAME).id].copy()
+        elif TASK == REACH_TASK:
+            self._whip_position = self.data.xpos[self.model.body(END_EFFECTOR_NAME).id].copy()
+        else:
+            print("ERROR: NO TASK SELECTED")
+            exit()
+
+        self._arm_tip_position = self.data.xpos[self.model.body(END_EFFECTOR_NAME).id].copy()
+        self._agent_joint_values = self.data.qpos[:6].copy()
+
+        if hasattr(self, "_lock_episode_target"):
+            self._lock_episode_target()
+            self._target_position = self.data.xpos[self.model.body("bottle").id].copy()
+        else:
+            self._target_position = self.data.xpos[self.model.body("bottle").id].copy()
+
+        self._whip_target_contact = bool(self._whip_target_contact or self._whip_target_contact_detected())
+        self._whip_velocity = self.data.cvel[self.model.body(WHIP_END_NAME).id][:3].copy()
+        self._update_derived_observation_values()
+
+        self._distance_to_target = np.linalg.norm(self._whip_position - self._target_position)
+        if self._distance_to_target < self._shortest_distance_to_target:
+            self._shortest_distance_to_target = self._distance_to_target
+
+        horizontal_speed = np.linalg.norm(self._whip_velocity[:2])
+        vertical_speed = abs(self._whip_velocity[2]) + 1e-6
+
+        near_target = self._distance_to_target < 0.35
+        moving_down_fast = self._whip_velocity[2] < -0.8
+        self._bad_top_down_hit = bool(near_target and moving_down_fast)
+
+        safety_check_enabled = self._current_loop > 300  # 0.3 seconds
+
+        self._arm_tip_ground_hit = bool(
+            safety_check_enabled and self._arm_tip_position[2] < 0.10
+        )
+
+        self._robot_ground_contact = bool(
+            safety_check_enabled and self._robot_ground_contact_detected()
+        )
+
+        self._arm_self_contact = bool(
+            safety_check_enabled and self._robot_self_contact_detected()
+        )
+
+        self._valid_side_hit = bool(
+            (self._whip_target_contact or self._distance_to_target < 0.08)
+            and horizontal_speed > 1.5 * vertical_speed
+            and self._whip_velocity[2] > -0.5
+        )
+
+        terminated = False
+        if TASK == WHIP_TASK:
+            terminated = self._whip_target_contact or self._valid_side_hit
+
+        truncated = False
+        if self._current_loop >= self._num_loops:
+            truncated = True
+
+        if self._arm_tip_ground_hit or self._robot_ground_contact or self._arm_self_contact:
+            truncated = True
+
+        reward = self.calc_reward()
+
+        observation = self._get_obs()
+        info = self._get_info()
+
+        self._prev_action = self._last_action.copy()
+        self._prev_distance_to_target = self._distance_to_target
+
+        if self.render_mode == "human":
+            self._render_frame()
+
+        return observation, reward, terminated, truncated, info
+
+    def close(self):
+        if self.viewer is not None:
+            self.viewer.close()
+        return super().close()
+
+    def render(self):
+        pass
+
+    def _render_frame(self):
+        self.viewer.sync()

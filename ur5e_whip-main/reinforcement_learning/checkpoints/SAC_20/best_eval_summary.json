@@ -1,0 +1,15 @@
+{
+  "timesteps": 520000,
+  "score": -152.23489301188417,
+  "safe_contact_rate": 0.0,
+  "contact_success_rate": 0.0,
+  "close_hit_rate": 0.0,
+  "side_hit_rate": 0.0,
+  "top_down_contact_rate": 0.0,
+  "unsafe_failure_rate": 0.0,
+  "failure_rate": 0.0,
+  "mean_reward": -531.9348138082797,
+  "mean_min_distance": 0.8375876821431345,
+  "mean_final_distance": 1.3644031682816253,
+  "mean_steps": 250.0
+}

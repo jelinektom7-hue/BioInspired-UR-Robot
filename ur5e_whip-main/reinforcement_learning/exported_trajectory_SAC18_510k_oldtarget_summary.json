@@ -1,0 +1,26 @@
+{
+  "episode": 22,
+  "teacher": "/home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_18/rl_model_510000_steps.zip",
+  "output": "/home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/exported_trajectory_SAC18_510k_oldtarget.csv",
+  "fixed_target": [
+    0.85,
+    -0.4,
+    0.7
+  ],
+  "deterministic": false,
+  "safe_contact": false,
+  "safe_close_miss": false,
+  "had_contact": false,
+  "had_side_hit": false,
+  "unsafe": false,
+  "had_arm_tip_ground": false,
+  "had_robot_ground": false,
+  "had_self_contact": false,
+  "min_distance": 1.3179315099166646,
+  "total_reward": -944.4111821180531,
+  "steps": 250,
+  "terminated": false,
+  "truncated": true,
+  "score": -1327.3756217378452,
+  "accepted_count_so_far": 0
+}

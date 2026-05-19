@@ -51,10 +51,12 @@
     </default>
     
     <default class="pandaX">
-      <joint type="hinge" axis="1 0 0" pos="0 0 0" springref="0" stiffness="0.242" damping="0.092" limited="false"/>
+      <!-- 40-segment soft rope setting. Per-joint stiffness/damping are scaled from the 80-segment version to keep similar whole-rope softness. -->
+      <joint type="hinge" axis="1 0 0" pos="0 0 0" springref="0" stiffness="0.022500" damping="0.012500" limited="false"/>
     </default>
     <default class="pandaY">
-      <joint type="hinge" axis="0 1 0" pos="0 0 0" springref="0" stiffness="0.242" damping="0.092" limited="false"/>
+      <!-- 40-segment soft rope setting. Per-joint stiffness/damping are scaled from the 80-segment version to keep similar whole-rope softness. -->
+      <joint type="hinge" axis="0 1 0" pos="0 0 0" springref="0" stiffness="0.022500" damping="0.012500" limited="false"/>
     </default>
   </default>
 
@@ -89,7 +91,7 @@
   <worldbody>
     <geom name="floor" type="plane" material="grid" size="5 5 .1" condim="3"/>
     <light name="top" pos="0 0 4" mode="trackcom" diffuse="0.8 0.8 0.8"/>
-    <camera name="fixed" pos="0 -2.3 1" xyaxes="1 0 0 0 0.3 1.2"/>
+    <camera name="fixed" pos="0 -2.3 0.5" xyaxes="1 0 0 0 0.3 1.2"/>
       
       <body name="base" quat="0 0 0 -1" childclass="ur5e">
       <inertial mass="4.0" pos="0 0 0" diaginertia="0.00443333156 0.00443333156 0.0072"/>
@@ -142,147 +144,234 @@
                   <geom material="linkgray" mesh="wrist3" class="visual"/>
                   <geom class="eef_collision" pos="0 0.08 0" quat="1 1 0 0" size="0.04 0.02"/>
                   <site name="attachment_site" pos="0 0.1 0" quat="-1 1 0 0"/>
-                  
-
                     <!-- Start of whip segments -->
+                    <!-- Soft 40-segment rope approximation.
+                         Segment bodies: 40
+                         Endpoint length from whip_start to whip_end: 1.008 m
+                         Per-body offset / cylinder length: 0.024585 m
+                         Rope visual/collision radius: 0.0045 m
+                         Point mass per segment/end: 0.001976 kg
+                         Total point mass kept close to 80-segment soft version: 0.081 kg
+                         Joint stiffness/damping are set in pandaX/pandaY defaults above.
+                    -->
                     <body name="whip_start" pos="0 0.02 0">
-                      <geom type="sphere" size="0.045" rgba="1 1 1 1" contype="0" conaffinity="0"/>
-                      <body name="N00" pos="0 0 0.036">
-                        <joint name="J0_0" class="pandaX"/>
-                        <joint name="J1_0" class="pandaY"/>
-                        <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                        <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                        <body name="N01" pos="0 0 0.036">
-                          <joint name="J0_1" class="pandaX"/>
-                          <joint name="J1_1" class="pandaY"/>
-                          <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                          <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                          <body name="N02" pos="0 0 0.036">
-                            <joint name="J0_2" class="pandaX"/>
-                            <joint name="J1_2" class="pandaY"/>
-                            <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                            <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                            <body name="N03" pos="0 0 0.036">
-                              <joint name="J0_3" class="pandaX"/>
-                              <joint name="J1_3" class="pandaY"/>
-                              <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                              <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                              <body name="N04" pos="0 0 0.036">
-                                <joint name="J0_4" class="pandaX"/>
-                                <joint name="J1_4" class="pandaY"/>
-                                <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                <body name="N05" pos="0 0 0.036">
-                                  <joint name="J0_5" class="pandaX"/>
-                                  <joint name="J1_5" class="pandaY"/>
-                                  <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                  <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                  <body name="N06" pos="0 0 0.036">
-                                    <joint name="J0_6" class="pandaX"/>
-                                    <joint name="J1_6" class="pandaY"/>
-                                    <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                    <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                    <body name="N07" pos="0 0 0.036">
-                                      <joint name="J0_7" class="pandaX"/>
-                                      <joint name="J1_7" class="pandaY"/>
-                                      <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                      <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                      <body name="N08" pos="0 0 0.036">
-                                        <joint name="J0_8" class="pandaX"/>
-                                        <joint name="J1_8" class="pandaY"/>
-                                        <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                        <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                        <body name="N09" pos="0 0 0.036">
-                                          <joint name="J0_9" class="pandaX"/>
-                                          <joint name="J1_9" class="pandaY"/>
-                                          <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                          <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                          <body name="N10" pos="0 0 0.036">
-                                            <joint name="J0_10" class="pandaX"/>
-                                            <joint name="J1_10" class="pandaY"/>
-                                            <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                            <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                            <body name="N11" pos="0 0 0.036">
-                                              <joint name="J0_11" class="pandaX"/>
-                                              <joint name="J1_11" class="pandaY"/>
-                                              <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                              <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                              <body name="N12" pos="0 0 0.036">
-                                                <joint name="J0_12" class="pandaX"/>
-                                                <joint name="J1_12" class="pandaY"/>
-                                                <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                <body name="N13" pos="0 0 0.036">
-                                                  <joint name="J0_13" class="pandaX"/>
-                                                  <joint name="J1_13" class="pandaY"/>
-                                                  <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                  <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                  <body name="N14" pos="0 0 0.036">
-                                                    <joint name="J0_14" class="pandaX"/>
-                                                    <joint name="J1_14" class="pandaY"/>
-                                                    <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                    <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                    <body name="N15" pos="0 0 0.036">
-                                                      <joint name="J0_15" class="pandaX"/>
-                                                      <joint name="J1_15" class="pandaY"/>
-                                                      <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                      <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                      <body name="N16" pos="0 0 0.036">
-                                                        <joint name="J0_16" class="pandaX"/>
-                                                        <joint name="J1_16" class="pandaY"/>
-                                                        <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                        <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                        <body name="N17" pos="0 0 0.036">
-                                                          <joint name="J0_17" class="pandaX"/>
-                                                          <joint name="J1_17" class="pandaY"/>
-                                                          <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                          <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                          <body name="N18" pos="0 0 0.036">
-                                                            <joint name="J0_18" class="pandaX"/>
-                                                            <joint name="J1_18" class="pandaY"/>
-                                                            <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                            <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                            <body name="N19" pos="0 0 0.036">
-                                                              <joint name="J0_19" class="pandaX"/>
-                                                              <joint name="J1_19" class="pandaY"/>
-                                                              <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                              <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                              <body name="N20" pos="0 0 0.036">
-                                                                <joint name="J0_20" class="pandaX"/>
-                                                                <joint name="J1_20" class="pandaY"/>
-                                                                <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                                <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                                <body name="N21" pos="0 0 0.036">
-                                                                  <joint name="J0_21" class="pandaX"/>
-                                                                  <joint name="J1_21" class="pandaY"/>
-                                                                  <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                                  <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                                  <body name="N22" pos="0 0 0.036">
-                                                                    <joint name="J0_22" class="pandaX"/>
-                                                                    <joint name="J1_22" class="pandaY"/>
-                                                                    <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                                    <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                                    <body name="N23" pos="0 0 0.036">
-                                                                      <joint name="J0_23" class="pandaX"/>
-                                                                      <joint name="J1_23" class="pandaY"/>
-                                                                      <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                                      <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                                      <body name="N24" pos="0 0 0.036">
-                                                                        <joint name="J0_24" class="pandaX"/>
-                                                                        <joint name="J1_24" class="pandaY"/>
-                                                                        <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                                        <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                                        <body name="N25" pos="0 0 0.036">
-                                                                          <joint name="J0_25" class="pandaX"/>
-                                                                          <joint name="J1_25" class="pandaY"/>
-                                                                          <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                                          <geom type="sphere" pos="0 0 0.036" size="0.006" mass="0.012" rgba="1 1 1 1"/>
-                                                                          <body name="N26" pos="0 0 0.036">
-                                                                            <joint name="J0_26" class="pandaX"/>
-                                                                            <joint name="J1_26" class="pandaY"/>
-                                                                            <geom type="cylinder" fromto="0 0 0 0 0 0.036" size="0.006" mass="0" rgba="1 1 1 1"/>
-                                                                            <body name="whip_end" pos="0 0 0.036">
-                                                                              <geom type="sphere" size="0.006" mass="0.012" rgba="1 1 1 1"/>
+                      <geom type="sphere" size="0.030" rgba="1 1 1 1" contype="0" conaffinity="0"/>
+                        <body name="N00" pos="0 0 0.024585">
+                          <joint name="J0_0" class="pandaX"/>
+                          <joint name="J1_0" class="pandaY"/>
+                          <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                          <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                          <body name="N01" pos="0 0 0.024585">
+                            <joint name="J0_1" class="pandaX"/>
+                            <joint name="J1_1" class="pandaY"/>
+                            <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                            <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                            <body name="N02" pos="0 0 0.024585">
+                              <joint name="J0_2" class="pandaX"/>
+                              <joint name="J1_2" class="pandaY"/>
+                              <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                              <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                              <body name="N03" pos="0 0 0.024585">
+                                <joint name="J0_3" class="pandaX"/>
+                                <joint name="J1_3" class="pandaY"/>
+                                <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                <body name="N04" pos="0 0 0.024585">
+                                  <joint name="J0_4" class="pandaX"/>
+                                  <joint name="J1_4" class="pandaY"/>
+                                  <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                  <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                  <body name="N05" pos="0 0 0.024585">
+                                    <joint name="J0_5" class="pandaX"/>
+                                    <joint name="J1_5" class="pandaY"/>
+                                    <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                    <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                    <body name="N06" pos="0 0 0.024585">
+                                      <joint name="J0_6" class="pandaX"/>
+                                      <joint name="J1_6" class="pandaY"/>
+                                      <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                      <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                      <body name="N07" pos="0 0 0.024585">
+                                        <joint name="J0_7" class="pandaX"/>
+                                        <joint name="J1_7" class="pandaY"/>
+                                        <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                        <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                        <body name="N08" pos="0 0 0.024585">
+                                          <joint name="J0_8" class="pandaX"/>
+                                          <joint name="J1_8" class="pandaY"/>
+                                          <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                          <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                          <body name="N09" pos="0 0 0.024585">
+                                            <joint name="J0_9" class="pandaX"/>
+                                            <joint name="J1_9" class="pandaY"/>
+                                            <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                            <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                            <body name="N10" pos="0 0 0.024585">
+                                              <joint name="J0_10" class="pandaX"/>
+                                              <joint name="J1_10" class="pandaY"/>
+                                              <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                              <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                              <body name="N11" pos="0 0 0.024585">
+                                                <joint name="J0_11" class="pandaX"/>
+                                                <joint name="J1_11" class="pandaY"/>
+                                                <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                <body name="N12" pos="0 0 0.024585">
+                                                  <joint name="J0_12" class="pandaX"/>
+                                                  <joint name="J1_12" class="pandaY"/>
+                                                  <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                  <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                  <body name="N13" pos="0 0 0.024585">
+                                                    <joint name="J0_13" class="pandaX"/>
+                                                    <joint name="J1_13" class="pandaY"/>
+                                                    <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                    <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                    <body name="N14" pos="0 0 0.024585">
+                                                      <joint name="J0_14" class="pandaX"/>
+                                                      <joint name="J1_14" class="pandaY"/>
+                                                      <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                      <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                      <body name="N15" pos="0 0 0.024585">
+                                                        <joint name="J0_15" class="pandaX"/>
+                                                        <joint name="J1_15" class="pandaY"/>
+                                                        <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                        <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                        <body name="N16" pos="0 0 0.024585">
+                                                          <joint name="J0_16" class="pandaX"/>
+                                                          <joint name="J1_16" class="pandaY"/>
+                                                          <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                          <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                          <body name="N17" pos="0 0 0.024585">
+                                                            <joint name="J0_17" class="pandaX"/>
+                                                            <joint name="J1_17" class="pandaY"/>
+                                                            <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                            <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                            <body name="N18" pos="0 0 0.024585">
+                                                              <joint name="J0_18" class="pandaX"/>
+                                                              <joint name="J1_18" class="pandaY"/>
+                                                              <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                              <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                              <body name="N19" pos="0 0 0.024585">
+                                                                <joint name="J0_19" class="pandaX"/>
+                                                                <joint name="J1_19" class="pandaY"/>
+                                                                <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                <body name="N20" pos="0 0 0.024585">
+                                                                  <joint name="J0_20" class="pandaX"/>
+                                                                  <joint name="J1_20" class="pandaY"/>
+                                                                  <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                  <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                  <body name="N21" pos="0 0 0.024585">
+                                                                    <joint name="J0_21" class="pandaX"/>
+                                                                    <joint name="J1_21" class="pandaY"/>
+                                                                    <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                    <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                    <body name="N22" pos="0 0 0.024585">
+                                                                      <joint name="J0_22" class="pandaX"/>
+                                                                      <joint name="J1_22" class="pandaY"/>
+                                                                      <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                      <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                      <body name="N23" pos="0 0 0.024585">
+                                                                        <joint name="J0_23" class="pandaX"/>
+                                                                        <joint name="J1_23" class="pandaY"/>
+                                                                        <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                        <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                        <body name="N24" pos="0 0 0.024585">
+                                                                          <joint name="J0_24" class="pandaX"/>
+                                                                          <joint name="J1_24" class="pandaY"/>
+                                                                          <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                          <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                          <body name="N25" pos="0 0 0.024585">
+                                                                            <joint name="J0_25" class="pandaX"/>
+                                                                            <joint name="J1_25" class="pandaY"/>
+                                                                            <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                            <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                            <body name="N26" pos="0 0 0.024585">
+                                                                              <joint name="J0_26" class="pandaX"/>
+                                                                              <joint name="J1_26" class="pandaY"/>
+                                                                              <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                              <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                              <body name="N27" pos="0 0 0.024585">
+                                                                                <joint name="J0_27" class="pandaX"/>
+                                                                                <joint name="J1_27" class="pandaY"/>
+                                                                                <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                <body name="N28" pos="0 0 0.024585">
+                                                                                  <joint name="J0_28" class="pandaX"/>
+                                                                                  <joint name="J1_28" class="pandaY"/>
+                                                                                  <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                  <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                  <body name="N29" pos="0 0 0.024585">
+                                                                                    <joint name="J0_29" class="pandaX"/>
+                                                                                    <joint name="J1_29" class="pandaY"/>
+                                                                                    <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                    <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                    <body name="N30" pos="0 0 0.024585">
+                                                                                      <joint name="J0_30" class="pandaX"/>
+                                                                                      <joint name="J1_30" class="pandaY"/>
+                                                                                      <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                      <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                      <body name="N31" pos="0 0 0.024585">
+                                                                                        <joint name="J0_31" class="pandaX"/>
+                                                                                        <joint name="J1_31" class="pandaY"/>
+                                                                                        <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                        <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                        <body name="N32" pos="0 0 0.024585">
+                                                                                          <joint name="J0_32" class="pandaX"/>
+                                                                                          <joint name="J1_32" class="pandaY"/>
+                                                                                          <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                          <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                          <body name="N33" pos="0 0 0.024585">
+                                                                                            <joint name="J0_33" class="pandaX"/>
+                                                                                            <joint name="J1_33" class="pandaY"/>
+                                                                                            <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                            <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                            <body name="N34" pos="0 0 0.024585">
+                                                                                              <joint name="J0_34" class="pandaX"/>
+                                                                                              <joint name="J1_34" class="pandaY"/>
+                                                                                              <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                              <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                              <body name="N35" pos="0 0 0.024585">
+                                                                                                <joint name="J0_35" class="pandaX"/>
+                                                                                                <joint name="J1_35" class="pandaY"/>
+                                                                                                <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                                <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                                <body name="N36" pos="0 0 0.024585">
+                                                                                                  <joint name="J0_36" class="pandaX"/>
+                                                                                                  <joint name="J1_36" class="pandaY"/>
+                                                                                                  <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                                  <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                                  <body name="N37" pos="0 0 0.024585">
+                                                                                                    <joint name="J0_37" class="pandaX"/>
+                                                                                                    <joint name="J1_37" class="pandaY"/>
+                                                                                                    <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                                    <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                                    <body name="N38" pos="0 0 0.024585">
+                                                                                                      <joint name="J0_38" class="pandaX"/>
+                                                                                                      <joint name="J1_38" class="pandaY"/>
+                                                                                                      <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                                      <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                                      <body name="N39" pos="0 0 0.024585">
+                                                                                                        <joint name="J0_39" class="pandaX"/>
+                                                                                                        <joint name="J1_39" class="pandaY"/>
+                                                                                                        <geom type="cylinder" fromto="0 0 0 0 0 0.024585" size="0.0045" mass="0" rgba="1 1 1 1"/>
+                                                                                                        <geom type="sphere" pos="0 0 0.024585" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                                        <body name="whip_end" pos="0 0 0.024585">
+                                                                                                          <geom type="sphere" size="0.0045" mass="0.001976" rgba="1 1 1 1"/>
+                                                                                                        </body>
+                                                                                                      </body>
+                                                                                                    </body>
+                                                                                                  </body>
+                                                                                                </body>
+                                                                                              </body>
+                                                                                            </body>
+                                                                                          </body>
+                                                                                        </body>
+                                                                                      </body>
+                                                                                    </body>
+                                                                                  </body>
+                                                                                </body>
+                                                                              </body>
                                                                             </body>
                                                                           </body>
                                                                         </body>
@@ -310,7 +399,6 @@
                             </body>
                           </body>
                         </body>
-                      </body>
                     </body>
                     <!-- End of whip segments -->
 
