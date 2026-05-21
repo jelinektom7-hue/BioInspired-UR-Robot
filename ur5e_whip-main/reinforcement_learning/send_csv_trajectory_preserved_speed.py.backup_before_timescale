@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+
+import csv
+import math
+import os
+import time
+from typing import Dict, List, Tuple
+
+import rclpy
+from rclpy.action import ActionClient
+from rclpy.node import Node
+
+from sensor_msgs.msg import JointState
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from control_msgs.action import FollowJointTrajectory
+from builtin_interfaces.msg import Duration
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+CSV_PATH = "/home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/exported_trajectory_SAC17_120k_command_clean_keep40p0_dense_v5p2_a25p0_flipped_180.csv"
+
+ACTION_NAME = "/scaled_joint_trajectory_controller/follow_joint_trajectory"
+
+JOINT_NAMES = [
+    "shoulder_pan_joint",
+    "shoulder_lift_joint",
+    "elbow_joint",
+    "wrist_1_joint",
+    "wrist_2_joint",
+    "wrist_3_joint",
+]
+
+# Move from current real pose to the CSV start pose before the full-speed motion.
+# Keep this part slow. The actual CSV motion will use original CSV timing.
+MOVE_TO_START_FIRST = True
+START_MOVE_MAX_SPEED_RAD_S = 0.20
+START_MOVE_ACCEL_RAD_S2 = 0.15
+
+DT_START_MOVE = 0.05
+
+START_DELAY_S = 1.0
+HOLD_CURRENT_BEFORE_START_MOVE_S = 1.0
+HOLD_AT_CSV_START_S = 2.0
+HOLD_AT_FINAL_POSE_S = 1.0
+
+GOAL_TIME_TOLERANCE_S = 3.0
+
+JOINT_LIMIT_LOW = -2.0 * math.pi
+JOINT_LIMIT_HIGH = 2.0 * math.pi
+JOINT_LIMIT_MARGIN = 0.05
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def sec_to_duration(seconds: float) -> Duration:
+    msg = Duration()
+    msg.sec = int(seconds)
+    msg.nanosec = int((seconds - msg.sec) * 1e9)
+    return msg
+
+
+def make_point(positions: List[float], t: float) -> JointTrajectoryPoint:
+    point = JointTrajectoryPoint()
+    point.positions = list(positions)
+    point.time_from_start = sec_to_duration(t)
+    return point
+
+
+def try_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
+def joint_limit_low():
+    return JOINT_LIMIT_LOW + JOINT_LIMIT_MARGIN
+
+
+def joint_limit_high():
+    return JOINT_LIMIT_HIGH - JOINT_LIMIT_MARGIN
+
+
+def check_joint_limits(positions: List[List[float]]):
+    low = joint_limit_low()
+    high = joint_limit_high()
+
+    for i, q_list in enumerate(positions):
+        for j, q in enumerate(q_list):
+            if q < low or q > high:
+                raise RuntimeError(
+                    f"Joint limit violation at CSV row {i}, {JOINT_NAMES[j]}: "
+                    f"{q:.6f} not in [{low:.6f}, {high:.6f}]"
+                )
+
+
+def trapezoid_duration(distance: float, max_speed: float, accel: float) -> float:
+    distance = abs(distance)
+
+    if distance < 1e-9:
+        return 0.0
+
+    t_accel = max_speed / accel
+    d_accel = 0.5 * accel * t_accel * t_accel
+
+    if 2.0 * d_accel >= distance:
+        return 2.0 * math.sqrt(distance / accel)
+
+    d_flat = distance - 2.0 * d_accel
+    return 2.0 * t_accel + d_flat / max_speed
+
+
+def trapezoid_position(
+    q_start: float,
+    q_goal: float,
+    t: float,
+    max_speed: float,
+    accel: float,
+) -> float:
+    distance_signed = q_goal - q_start
+    distance = abs(distance_signed)
+
+    if distance < 1e-9:
+        return q_goal
+
+    direction = 1.0 if distance_signed >= 0.0 else -1.0
+
+    t_accel = max_speed / accel
+    d_accel = 0.5 * accel * t_accel * t_accel
+
+    if 2.0 * d_accel >= distance:
+        t_accel = math.sqrt(distance / accel)
+        t_flat = 0.0
+        v_peak = accel * t_accel
+    else:
+        d_flat = distance - 2.0 * d_accel
+        t_flat = d_flat / max_speed
+        v_peak = max_speed
+
+    total_time = 2.0 * t_accel + t_flat
+    t = max(0.0, min(t, total_time))
+
+    if t <= t_accel:
+        s = 0.5 * accel * t * t
+    elif t <= t_accel + t_flat:
+        t2 = t - t_accel
+        s = 0.5 * accel * t_accel * t_accel + v_peak * t2
+    else:
+        t3 = t - t_accel - t_flat
+        d_before_decel = 0.5 * accel * t_accel * t_accel + v_peak * t_flat
+        s = d_before_decel + v_peak * t3 - 0.5 * accel * t3 * t3
+
+    return q_start + direction * s
+
+
+def add_slow_move_to_start(
+    points: List[JointTrajectoryPoint],
+    q_start: List[float],
+    q_goal: List[float],
+    t_start: float,
+) -> float:
+    durations = [
+        trapezoid_duration(
+            distance=q_goal[i] - q_start[i],
+            max_speed=START_MOVE_MAX_SPEED_RAD_S,
+            accel=START_MOVE_ACCEL_RAD_S2,
+        )
+        for i in range(6)
+    ]
+
+    total_duration = max(durations)
+
+    if total_duration < DT_START_MOVE:
+        total_duration = DT_START_MOVE
+
+    n_steps = max(1, int(math.ceil(total_duration / DT_START_MOVE)))
+
+    for step in range(1, n_steps + 1):
+        rel_t = min(step * DT_START_MOVE, total_duration)
+
+        q = []
+
+        for i in range(6):
+            q.append(
+                trapezoid_position(
+                    q_start=q_start[i],
+                    q_goal=q_goal[i],
+                    t=rel_t,
+                    max_speed=START_MOVE_MAX_SPEED_RAD_S,
+                    accel=START_MOVE_ACCEL_RAD_S2,
+                )
+            )
+
+        points.append(make_point(q, t_start + rel_t))
+
+    return t_start + total_duration
+
+
+# ============================================================
+# CSV READING
+# ============================================================
+
+def read_csv_positions_and_times(path: str) -> Tuple[List[float], List[List[float]], List[str]]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+
+    with open(path, "r", newline="") as f:
+        sample = f.read(4096)
+        f.seek(0)
+
+        try:
+            has_header = csv.Sniffer().has_header(sample)
+        except Exception:
+            has_header = True
+
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    if not rows:
+        raise RuntimeError("CSV is empty.")
+
+    if has_header:
+        header = rows[0]
+        data_rows = rows[1:]
+    else:
+        header = []
+        data_rows = rows
+
+    numeric_rows = []
+
+    for row in data_rows:
+        if not row:
+            continue
+
+        values = [try_float(x.strip()) for x in row]
+
+        if any(v is None for v in values):
+            continue
+
+        numeric_rows.append(values)
+
+    if len(numeric_rows) < 2:
+        raise RuntimeError("CSV does not contain enough numeric rows.")
+
+    num_cols = len(numeric_rows[0])
+
+    for r in numeric_rows:
+        if len(r) != num_cols:
+            raise RuntimeError("CSV has inconsistent number of columns.")
+
+    time_col = None
+
+    if header:
+        lower_header = [h.strip().lower() for h in header]
+
+        for candidate in ["time", "t", "timestamp", "time_s", "seconds"]:
+            if candidate in lower_header:
+                time_col = lower_header.index(candidate)
+                break
+
+    if time_col is None:
+        first_col = [r[0] for r in numeric_rows]
+
+        if all(first_col[i + 1] > first_col[i] for i in range(len(first_col) - 1)):
+            time_col = 0
+        else:
+            raise RuntimeError(
+                "Could not identify a valid time column. "
+                "Full-speed sender requires real CSV timestamps."
+            )
+
+    joint_cols = []
+
+    if header:
+        lower_header = [h.strip().lower() for h in header]
+
+        for name in JOINT_NAMES:
+            if name.lower() in lower_header:
+                joint_cols.append(lower_header.index(name.lower()))
+
+        if len(joint_cols) != 6:
+            joint_cols = []
+
+            candidates = [
+                ["q0", "q1", "q2", "q3", "q4", "q5"],
+                ["joint_0", "joint_1", "joint_2", "joint_3", "joint_4", "joint_5"],
+                ["j0", "j1", "j2", "j3", "j4", "j5"],
+                ["position_0", "position_1", "position_2", "position_3", "position_4", "position_5"],
+            ]
+
+            for candidate_set in candidates:
+                if all(c in lower_header for c in candidate_set):
+                    joint_cols = [lower_header.index(c) for c in candidate_set]
+                    break
+
+    if len(joint_cols) != 6:
+        all_cols = list(range(num_cols))
+        all_cols.remove(time_col)
+
+        if len(all_cols) < 6:
+            raise RuntimeError("Could not identify 6 joint columns.")
+
+        joint_cols = all_cols[:6]
+
+    times = [r[time_col] for r in numeric_rows]
+    positions = [[r[c] for c in joint_cols] for r in numeric_rows]
+
+    # Normalize time so first CSV point starts at 0.
+    t0 = times[0]
+    times = [t - t0 for t in times]
+
+    # Validate strictly enough to avoid old 0.002s discontinuity issue.
+    for i in range(len(times) - 1):
+        dt = times[i + 1] - times[i]
+
+        if dt <= 0.0:
+            raise RuntimeError(f"Bad timestamp at row {i}->{i+1}: dt={dt}")
+
+    used_columns = [header[c] if header else f"column_{c}" for c in joint_cols]
+
+    return times, positions, used_columns
+
+
+# ============================================================
+# ROS NODE
+# ============================================================
+
+class FullSpeedCsvSender(Node):
+    def __init__(self):
+        super().__init__("full_speed_csv_sender")
+
+        self.latest_joint_state = None
+
+        self.joint_sub = self.create_subscription(
+            JointState,
+            "/joint_states",
+            self.joint_state_callback,
+            10,
+        )
+
+        self.action_client = ActionClient(
+            self,
+            FollowJointTrajectory,
+            ACTION_NAME,
+        )
+
+    def joint_state_callback(self, msg: JointState):
+        self.latest_joint_state = msg
+
+    def wait_for_joint_state(self, timeout_s: float = 10.0) -> Dict[str, float]:
+        start = time.time()
+
+        while rclpy.ok() and time.time() - start < timeout_s:
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+            if self.latest_joint_state is None:
+                continue
+
+            joint_map = {
+                name: pos
+                for name, pos in zip(
+                    self.latest_joint_state.name,
+                    self.latest_joint_state.position,
+                )
+            }
+
+            if all(j in joint_map for j in JOINT_NAMES):
+                return joint_map
+
+        raise RuntimeError("Timed out waiting for /joint_states with all UR5e joints.")
+
+    def print_positions(self, title: str, positions: List[float]):
+        print(f"\n{title}")
+        for name, q in zip(JOINT_NAMES, positions):
+            print(f"  {name}: {q:.6f} rad")
+
+    def build_trajectory(
+        self,
+        current_positions: List[float],
+        csv_times: List[float],
+        csv_positions: List[List[float]],
+    ) -> JointTrajectory:
+        trajectory = JointTrajectory()
+        trajectory.joint_names = list(JOINT_NAMES)
+
+        points = []
+
+        t = START_DELAY_S
+
+        # Hold current pose.
+        points.append(make_point(current_positions, t))
+
+        t += HOLD_CURRENT_BEFORE_START_MOVE_S
+        points.append(make_point(current_positions, t))
+
+        csv_start = csv_positions[0]
+        csv_end = csv_positions[-1]
+
+        if MOVE_TO_START_FIRST:
+            t = add_slow_move_to_start(
+                points=points,
+                q_start=current_positions,
+                q_goal=csv_start,
+                t_start=t,
+            )
+
+            t += HOLD_AT_CSV_START_S
+            points.append(make_point(csv_start, t))
+
+        else:
+            # Dangerous unless robot is already exactly at CSV start.
+            t += HOLD_AT_CSV_START_S
+            points.append(make_point(csv_start, t))
+
+        csv_section_start = t
+
+        # Preserve original CSV timing exactly.
+        for rel_t, q in zip(csv_times[1:], csv_positions[1:]):
+            points.append(make_point(q, csv_section_start + rel_t))
+
+        final_t = csv_section_start + csv_times[-1]
+
+        final_t += HOLD_AT_FINAL_POSE_S
+        points.append(make_point(csv_end, final_t))
+
+        trajectory.points = points
+        return trajectory
+
+    def send_trajectory(self, trajectory: JointTrajectory):
+        if not self.action_client.wait_for_server(timeout_sec=10.0):
+            raise RuntimeError(f"Action server not available: {ACTION_NAME}")
+
+        total_time = (
+            trajectory.points[-1].time_from_start.sec
+            + trajectory.points[-1].time_from_start.nanosec * 1e-9
+        )
+
+        print(f"\nSending FULL-SPEED trajectory with {len(trajectory.points)} points.")
+        print(f"Total command time: {total_time:.3f} s")
+
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory = trajectory
+        goal_msg.goal_time_tolerance = sec_to_duration(GOAL_TIME_TOLERANCE_S)
+
+        send_future = self.action_client.send_goal_async(goal_msg)
+        rclpy.spin_until_future_complete(self, send_future)
+
+        goal_handle = send_future.result()
+
+        if goal_handle is None:
+            raise RuntimeError("No goal handle returned by action server.")
+
+        if not goal_handle.accepted:
+            raise RuntimeError("Trajectory goal was rejected.")
+
+        print("Trajectory accepted.")
+
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future)
+
+        result = result_future.result().result
+
+        print(f"Done. Error code: {result.error_code}")
+
+        if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+            raise RuntimeError(f"Trajectory failed: {result.error_string}")
+
+    def run(self):
+        print("\nReading full-speed CSV:")
+        print(f"  {CSV_PATH}")
+
+        csv_times, csv_positions, used_columns = read_csv_positions_and_times(CSV_PATH)
+
+        print(f"\nCSV points loaded: {len(csv_positions)}")
+        print(f"CSV joint columns: {used_columns}")
+        print(f"CSV motion duration: {csv_times[-1]:.3f} s")
+
+        check_joint_limits(csv_positions)
+
+        joint_map = self.wait_for_joint_state()
+        current_positions = [joint_map[name] for name in JOINT_NAMES]
+
+        self.print_positions("Current robot pose:", current_positions)
+        self.print_positions("CSV start pose:", csv_positions[0])
+        self.print_positions("CSV final pose:", csv_positions[-1])
+
+        trajectory = self.build_trajectory(
+            current_positions=current_positions,
+            csv_times=csv_times,
+            csv_positions=csv_positions,
+        )
+
+        self.send_trajectory(trajectory)
+
+
+def main():
+    rclpy.init()
+
+    node = FullSpeedCsvSender()
+
+    try:
+        node.run()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+    except Exception as exc:
+        print(f"\nERROR: {exc}")
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

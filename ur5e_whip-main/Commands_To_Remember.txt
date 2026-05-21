@@ -1,0 +1,303 @@
+Run a training session:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning
+python SAC_trainer.py
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Open TensorBoard for checking on progress:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+
+python -m tensorboard.main --inspect --logdir /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_tensorboard
+
+python -m tensorboard.main --logdir /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_tensorboard
+
+Run on browser: http://localhost:6006/
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Check a checkpoint:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+ls -lh /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_models_my_run
+
+change the line in file SAC_evaluator
+
+MODEL_FILE = os.path.expanduser("~") + "/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/SAC_models_my_run/rl_model_1000000_steps.zip"
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning
+python SAC_evaluator.py
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Check starting position:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/gymnasium_env_lib
+pip install -e .
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main
+python reinforcement_learning/env_tester.py
+
+
+
+After big changes in whip_world.py:
+
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_env/bin/activate
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning/gymnasium_env_lib
+pip install -e .
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Activate camera commands:
+
+new terminal:
+
+deactivate 2>/dev/null
+export PYTHONNOUSERSITE=1
+source /opt/ros/humble/setup.bash
+source /home/dragos/ros2_ws/install/setup.bash
+source /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/ros_mujoco_env/bin/activate
+
+cd ~/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator
+python3 mujoco_camera_bridge.py
+
+new terminal:
+
+deactivate 2>/dev/null
+export PYTHONNOUSERSITE=1
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+ros2 run image_object_locator image_subscriber
+
+new terminal:
+
+deactivate 2>/dev/null
+export PYTHONNOUSERSITE=1
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+cd ~/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/mujoco_simulator
+python3 camera_to_world.py
+
+new terminal:
+
+deactivate 2>/dev/null
+export PYTHONNOUSERSITE=1
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+ros2 topic list
+
+check if they publish:
+
+ros2 topic hz /camera/camera/color/image_raw
+ros2 topic echo /camera_pose_world --once
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Change Initial Positions:
+
+# Fixed start pose. Keep this stable for the first side-hit training runs.
+        j0 = np.deg2rad(+0)
+        j1 = np.deg2rad(-110)
+        j2 = np.deg2rad(+65)
+        j3 = np.deg2rad(-50)
+        j4 = np.deg2rad(-90)
+        j5 = np.deg2rad(+0)
+
+        self._agent_joint_values = np.array([j0, j1, j2, j3, j4, j5], dtype=np.float64)
+        """j0 = np.deg2rad(+0)
+        j1 = np.deg2rad(-110)
+        j2 = np.deg2rad(+65)
+        j3 = np.deg2rad(-200)
+        j4 = np.deg2rad(-90)
+        j5 = np.deg2rad(+0)
+        self._agent_joint_values = np.array([j0, j1, j2, j3, j4, j5], dtype=np.float64)"""
+
+        # Move target sideways and slightly higher to make side hits physically easier.
+        x = 0.85
+        y = 0
+        
+        
+        z = 0.55
+        self.model.site("site_object").pos = [x, y, z]
+        self._target_position = self.model.site("site_object").pos.copy()
+        
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Connect and test on robot arm:
+
+1. Physically connect
+
+Connect the Ethernet cable between laptop and UR5e controller.
+
+2. Set laptop Ethernet IPs
+
+sudo ip addr flush dev eno1
+sudo ip addr add 192.168.0.101/24 dev eno1
+sudo ip addr add 192.168.0.10/24 dev eno1
+sudo ip link set eno1 up
+
+3. Test network connection
+
+Run:
+
+ping 192.168.0.100
+
+4. Source ROS 2 and workspace
+
+In a new terminal:
+
+deactivate 2>/dev/null
+export PYTHONNOUSERSITE=1
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+5. Launch the UR ROS 2 driver
+
+Run:
+
+ros2 launch ur_robot_driver ur_control.launch.py \
+  ur_type:=ur5e \
+  robot_ip:=192.168.0.100 \
+  reverse_ip:=192.168.0.10 \
+  launch_rviz:=false
+
+6. Start External Control on the pendant
+
+On the UR pendant:
+
+Open the program, probably called:
+Control by tomas
+Make sure it uses External Control.
+Make sure the remote host is:
+192.168.0.10
+Make sure the port is:
+50002
+Press Play.
+
+Set the speed slider low, around 5–10%.
+
+7. Check that ROS sees the robot properly
+
+Open another terminal and source ROS again:
+
+deactivate 2>/dev/null
+export PYTHONNOUSERSITE=1
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+Check speed scaling:
+
+ros2 topic echo /speed_scaling_state_broadcaster/speed_scaling --once
+
+Check the trajectory controller:
+
+ros2 control list_controllers | grep trajectory
+
+Expected:
+
+scaled_joint_trajectory_controller ur_controllers/ScaledJointTrajectoryController active
+
+Check joint states:
+
+ros2 topic echo /joint_states --once
+
+8. Run the safe joint diagnostic
+
+Only after speed scaling is nonzero and the controller is active:
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning
+
+python3 test_tiny_real_move.py
+
+
+NEW STUFF:
+
+UR driver:
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main
+source use_ros_robot_env.sh
+
+ros2 launch ur_robot_driver ur_control.launch.py \
+  ur_type:=ur5e \
+  robot_ip:=192.168.0.100 \
+  reverse_ip:=192.168.0.10 \
+  launch_rviz:=false
+  
+Train SAC Simulation:
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main
+source use_rl_env.sh
+
+cd reinforcement_learning
+python SAC_trainer.py
+
+Run SAC simulation/evaluator:
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main
+source use_rl_env.sh
+
+cd reinforcement_learning
+python SAC_evaluator.py --episodes 3 --deterministic
+
+Or if specific one is needed:
+python SAC_evaluator.py --model rl_model_1000_steps.zip --episodes 3 --deterministic
+
+Test whip without training:
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main
+
+source use_rl_env.sh
+
+cd reinforcement_learning
+python view_whip_physics.py --mode wiggle --seconds 8
+
+Run start pose of irl arm:
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main
+source use_ros_robot_env.sh
+
+cd reinforcement_learning
+python3 move_to_whip_start_pose.py
+
+Run trajectory of irl arm:
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main
+source use_ros_robot_env.sh
+
+cd reinforcement_learning
+python3 send_csv_trajectory_full_speed.py
+
+Change trajectory parameters:
+
+python3 make_ramp_fast_latebrake_trajectory.py \
+  --input exported_trajectory_SAC17_120k_command_clean.csv \
+  --keep-percent 40 \
+  --ramp-fraction 0.10 \
+  --brake-start-fraction 0.75 \
+  --start-speed-limit 1.0 \
+  --fast-speed-limit 30 \
+  --final-speed-limit 0.45 \
+  --max-accel 400.0 \
+  --max-step-rad 0.0025 \
+  --min-dt 0.002 \
+  --ramp-curve-power 2.5 \
+  --brake-curve-power 0.5 \
+  --smooth-passes 1 \
+  --hold-seconds 1.0
+
+
+
+
+
+
+
+

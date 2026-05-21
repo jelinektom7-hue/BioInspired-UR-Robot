@@ -1,48 +1,684 @@
-import gymnasium as gym
-import gymnasium_robotics
-from stable_baselines3 import SAC
-from stable_baselines3.common.callbacks import CheckpointCallback
+import csv
+import json
 import os
+from pathlib import Path
+
+import gymnasium as gym
+import gymnasium_robotics  # Keeps old dependency/import behavior intact.
+import numpy as np
+from stable_baselines3 import SAC
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+
 import gymnasium_env
 
 
-# For training a new model
-MODEL_SAVE_FOLDER = os.path.expanduser("~") + "/ros2_ws/src/ur5e_whip/reinforcement_learning/SAC_models_09_whip_02/"
-TENSOR_LOG_FOLDER = os.path.expanduser("~") +   "/ros2_ws/src/ur5e_whip/reinforcement_learning/SAC_tensorboard/"
+# ============================================================
+# PATHS / BASIC CONFIGURATION
+# ============================================================
 
-# For loading a pretrained model
-MODEL_TO_LOAD = os.path.expanduser("~") + "/ros2_ws/src/ur5e_whip/reinforcement_learning/SAC_models_09_whip_02/l_model_710000_steps"
+PROJECT_ROOT = Path.home() / "ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main"
 
-ENVIRONMENT = 'gymnasium_env/WhipWorld-v0'
+MODEL_SAVE_FOLDER = str(PROJECT_ROOT / "reinforcement_learning/SAC_models_my_run/")
+TENSOR_LOG_FOLDER = str(PROJECT_ROOT / "reinforcement_learning/SAC_tensorboard/")
+ENVIRONMENT = "gymnasium_env/WhipWorld-v0"
 
+TOTAL_TIMESTEPS = 1_000_000
+
+# Parallel rollout collection. This trains ONE shared SAC model using several
+# independent MuJoCo environments at the same time. It does not create separate
+# models. Start with 6 because the user requested faster rollout collection; reduce to 4 or 2 if CPU load is too high.
+N_PARALLEL_ENVS = 6
+ENV_BASE_SEED = 12345
+SUBPROC_START_METHOD = "fork"  # Linux/Ubuntu-friendly. Change to "spawn" only if needed.
+
+# With vectorized envs, every environment step collects N_PARALLEL_ENVS transitions.
+# Setting gradient_steps=N_PARALLEL_ENVS keeps the update/data ratio close to the
+# old one-env trainer. Lower this to 1 only if CPU/GPU training updates become
+# the bottleneck and you need more speed.
+GRADIENT_STEPS_PER_ENV_STEP = N_PARALLEL_ENVS
+
+# Stage 1: force the center target so the policy first learns to swing.
+# Stage 2: after this many steps, switch back to the full randomized target box.
+# This is not a small manual test step; it runs automatically during training.
+FIXED_CENTER_PRETRAIN_ENABLED = True
+FIXED_CENTER_PRETRAIN_STEPS = 300_000
+
+
+# Save often at the beginning so you can confirm training is running,
+# then save every 10k steps.
+EARLY_CHECKPOINT_UNTIL_STEPS = 10_000
+EARLY_CHECKPOINT_SAVE_FREQ = 1_000
+NORMAL_CHECKPOINT_SAVE_FREQ = 10_000
+
+
+# ============================================================
+# OPTIONAL BEHAVIOR-CLONING WARM START
+# ============================================================
+# If collect_successful_rollouts.py + behavior_clone_from_successes.py created
+# this model, the trainer will load it automatically and continue SAC training
+# from that actor instead of starting from random initialization.
+#
+# You can also override with:
+#   SAC_RESUME_MODEL=/absolute/path/to/model.zip python SAC_trainer.py
+LOAD_BC_WARMSTART_IF_EXISTS = True
+BC_WARMSTART_MODEL = Path(MODEL_SAVE_FOLDER) / "bc_warmstart_model.zip"
+SAC_RESUME_MODEL_ENV_VAR = "SAC_RESUME_MODEL"
+
+# When fine-tuning from a behavior-cloned model, do not restart safety shaping
+# from zero. This keeps the environment closer to the final safe behavior while
+# still allowing exploration and SAC improvement.
+WARMSTART_MIN_TRAINING_PROGRESS = 0.55
+
+# ============================================================
+# BEST-MODEL EVALUATION CONFIGURATION
+# ============================================================
+
+# Evaluate periodically and save SAC_models_my_run/best_model.zip whenever a
+# checkpoint performs better on the same fixed target set.
+BEST_MODEL_EVAL_ENABLED = True
+BEST_MODEL_EVAL_FREQ = 20_000
+BEST_MODEL_N_EVAL_TARGETS = 13
+BEST_MODEL_DETERMINISTIC = True
+
+BEST_MODEL_PATH = Path(MODEL_SAVE_FOLDER) / "best_model.zip"
+BEST_EVAL_SUMMARY_PATH = Path(MODEL_SAVE_FOLDER) / "best_eval_summary.json"
+EVAL_HISTORY_CSV_PATH = Path(MODEL_SAVE_FOLDER) / "eval_history.csv"
+BEST_ROLLOUT_CSV_PATH = Path(MODEL_SAVE_FOLDER) / "best_rollout.csv"
+
+# Fixed target set in the SIMULATION frame. These are intentionally deterministic
+# so model A and model B are judged on the same target locations.
+# Training cube: center [1.10, -0.45, 0.80], size [0.50, 0.50, 0.50].
+EVAL_TARGETS = np.array(
+    [
+        [1.10, -0.45, 0.80],  # center
+        [0.85, -0.45, 0.80],  # near x edge, old fixed-hit side included in cube
+        [1.35, -0.45, 0.80],  # far x edge
+        [1.10, -0.70, 0.80],  # y low edge
+        [1.10, -0.20, 0.80],  # y high edge
+        [1.10, -0.45, 0.55],  # low z
+        [1.10, -0.45, 1.05],  # high z
+        [0.90, -0.65, 0.65],
+        [0.90, -0.25, 0.95],
+        [1.30, -0.65, 0.95],
+        [1.30, -0.25, 0.65],
+        [1.25, -0.55, 0.75],
+        [0.95, -0.35, 0.85],
+    ],
+    dtype=np.float64,
+)
+
+# Score used only for selecting best_model.zip.
+# This is a true "high score" system: any evaluation that beats the previous
+# score overwrites best_model.zip. Safe hits dominate. Reward is deliberately
+# secondary so the evaluator does not select floor-smashing reward hacks.
+BEST_SCORE_SAFE_CONTACT_WEIGHT = 12_000.0
+BEST_SCORE_SIDE_HIT_WEIGHT = 6_000.0
+BEST_SCORE_CLOSE_HIT_WEIGHT = 1_000.0
+BEST_SCORE_REWARD_WEIGHT = 0.05
+BEST_SCORE_MIN_DISTANCE_WEIGHT = 150.0
+BEST_SCORE_UNSAFE_FAILURE_PENALTY = 18_000.0
+BEST_SCORE_TOP_DOWN_PENALTY = 2_000.0
+
+# If the target contact sensor is too strict, this still counts as a useful
+# close hit for selecting a best model. It does not change the environment reward.
+CLOSE_HIT_DISTANCE_M = 0.08
+
+
+
+# ============================================================
+# PARALLEL ENVIRONMENT CREATION
+# ============================================================
+
+def make_training_env(rank: int, seed: int = ENV_BASE_SEED):
+    """
+    Factory for SubprocVecEnv.
+
+    Each worker gets its own MuJoCo environment and its own seed, but all workers
+    feed experience into the same SAC replay buffer and train the same model.
+    """
+    def _init():
+        env = gym.make(ENVIRONMENT)
+        try:
+            env.reset(seed=seed + rank)
+        except Exception:
+            pass
+        return env
+
+    return _init
+
+
+def make_vectorized_training_env():
+    if N_PARALLEL_ENVS <= 1:
+        return DummyVecEnv([make_training_env(0)])
+
+    return SubprocVecEnv(
+        [make_training_env(i) for i in range(N_PARALLEL_ENVS)],
+        start_method=SUBPROC_START_METHOD,
+    )
+
+# ============================================================
+# CALLBACKS
+# ============================================================
+
+class TwoStageCheckpointCallback(BaseCallback):
+    """
+    Save checkpoints every 1,000 steps for the first 10,000 steps,
+    then every 10,000 steps after that.
+    """
+
+    def __init__(self, save_path, name_prefix="rl_model", verbose=1):
+        super().__init__(verbose=verbose)
+        self.save_path = save_path
+        self.name_prefix = name_prefix
+        self._last_saved_step = None
+
+    def _init_callback(self) -> None:
+        os.makedirs(self.save_path, exist_ok=True)
+
+    def _should_save(self, step: int) -> bool:
+        if step <= 0:
+            return False
+
+        if step <= EARLY_CHECKPOINT_UNTIL_STEPS:
+            return step % EARLY_CHECKPOINT_SAVE_FREQ == 0
+
+        return step % NORMAL_CHECKPOINT_SAVE_FREQ == 0
+
+    def _on_step(self) -> bool:
+        step = int(self.num_timesteps)
+
+        if self._should_save(step) and step != self._last_saved_step:
+            path = os.path.join(self.save_path, f"{self.name_prefix}_{step}_steps.zip")
+            self.model.save(path)
+            self._last_saved_step = step
+
+            if self.verbose > 0:
+                print(f"Saved checkpoint: {path}")
+
+        return True
+
+
+class TrainingProgressCallback(BaseCallback):
+    """
+    Sends normalized training progress to the environment.
+
+    The environment uses this to allow more exploration early in training and
+    gradually enforce safety penalties/truncation later. This is not used for
+    evaluation, where full safety is enabled.
+    """
+
+    def __init__(
+        self,
+        total_timesteps: int,
+        min_progress: float = 0.0,
+        fixed_center_pretrain_steps: int = 0,
+        fixed_center_pretrain_enabled: bool = False,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose=verbose)
+        self.total_timesteps = max(int(total_timesteps), 1)
+        self.min_progress = float(np.clip(min_progress, 0.0, 1.0))
+        self.fixed_center_pretrain_steps = max(int(fixed_center_pretrain_steps), 0)
+        self.fixed_center_pretrain_enabled = bool(fixed_center_pretrain_enabled)
+        self._last_print_bucket = -1
+        self._last_fixed_center_state = None
+
+    def _on_step(self) -> bool:
+        raw_progress = min(float(self.num_timesteps) / float(self.total_timesteps), 1.0)
+        progress = self.min_progress + (1.0 - self.min_progress) * raw_progress
+        progress = min(progress, 1.0)
+        try:
+            self.training_env.env_method("set_training_progress", progress)
+        except Exception:
+            # Older env versions do not have this method. Training can still run.
+            pass
+
+        fixed_center_enabled = bool(
+            self.fixed_center_pretrain_enabled
+            and self.num_timesteps < self.fixed_center_pretrain_steps
+        )
+        try:
+            self.training_env.env_method("set_fixed_center_training_mode", fixed_center_enabled)
+        except Exception:
+            pass
+
+        if fixed_center_enabled != self._last_fixed_center_state:
+            self._last_fixed_center_state = fixed_center_enabled
+            if self.verbose > 0:
+                mode = "fixed-center swing pretraining" if fixed_center_enabled else "random target training"
+                print(f"Target mode switched to: {mode}")
+
+        if self.verbose > 0:
+            bucket = int(progress * 10)
+            if bucket != self._last_print_bucket:
+                self._last_print_bucket = bucket
+                print(f"Training progress sent to env: {progress:.3f}")
+
+        return True
+
+
+class BestWhipModelCallback(BaseCallback):
+    """
+    Periodically evaluates the current policy on a fixed target set and saves
+    best_model.zip when it performs better than all previous evaluations.
+
+    This is the closest useful equivalent of "remember the best try" for SAC:
+    it preserves the best policy network found during training instead of only
+    relying on the final checkpoint.
+    """
+
+    def __init__(
+        self,
+        eval_env_id: str,
+        eval_targets: np.ndarray,
+        eval_freq: int,
+        save_dir: str,
+        deterministic: bool = True,
+        verbose: int = 1,
+    ):
+        super().__init__(verbose=verbose)
+        self.eval_env_id = eval_env_id
+        self.eval_targets = np.array(eval_targets, dtype=np.float64)
+        self.eval_freq = int(eval_freq)
+        self.save_dir = Path(save_dir)
+        self.deterministic = bool(deterministic)
+        self.best_score = -np.inf
+        self.eval_env = None
+        self._last_eval_step = None
+
+    def _init_callback(self) -> None:
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.eval_env = gym.make(self.eval_env_id)
+        try:
+            self.eval_env.unwrapped.set_training_progress(1.0)
+        except Exception:
+            pass
+        try:
+            self.eval_env.unwrapped.set_fixed_center_training_mode(False)
+        except Exception:
+            pass
+
+        if not EVAL_HISTORY_CSV_PATH.exists():
+            with open(EVAL_HISTORY_CSV_PATH, "w", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "timesteps",
+                        "score",
+                        "safe_contact_rate",
+                        "contact_success_rate",
+                        "close_hit_rate",
+                        "side_hit_rate",
+                        "top_down_contact_rate",
+                        "unsafe_failure_rate",
+                        "failure_rate",
+                        "mean_reward",
+                        "mean_min_distance",
+                        "mean_final_distance",
+                        "mean_steps",
+                    ],
+                )
+                writer.writeheader()
+
+    def _on_training_end(self) -> None:
+        if self.eval_env is not None:
+            self.eval_env.close()
+            self.eval_env = None
+
+    def _on_step(self) -> bool:
+        step = int(self.num_timesteps)
+
+        if step <= 0:
+            return True
+
+        if step % self.eval_freq != 0:
+            return True
+
+        if step == self._last_eval_step:
+            return True
+
+        self._last_eval_step = step
+        summary, best_rollout_rows = self.evaluate_current_policy(step)
+
+        with open(EVAL_HISTORY_CSV_PATH, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(summary.keys()))
+            writer.writerow(summary)
+
+        if self.verbose > 0:
+            print(
+                "\n========== FIXED-TARGET BEST-MODEL EVAL =========="
+                f"\nsteps:                {step}"
+                f"\nscore:                {summary['score']:.2f}"
+                f"\nsafe_contact_rate:    {summary['safe_contact_rate']:.3f}"
+                f"\ncontact_success_rate: {summary['contact_success_rate']:.3f}"
+                f"\nclose_hit_rate:       {summary['close_hit_rate']:.3f}"
+                f"\nside_hit_rate:        {summary['side_hit_rate']:.3f}"
+                f"\ntop_down_rate:        {summary['top_down_contact_rate']:.3f}"
+                f"\nunsafe_failure_rate:  {summary['unsafe_failure_rate']:.3f}"
+                f"\nmean_reward:          {summary['mean_reward']:.2f}"
+                f"\nmean_min_distance:    {summary['mean_min_distance']:.4f} m"
+                f"\nbest_score_so_far:    {self.best_score:.2f}"
+                "\n==================================================\n"
+            )
+
+        if summary["score"] > self.best_score:
+            self.best_score = float(summary["score"])
+            self.model.save(str(BEST_MODEL_PATH))
+
+            with open(BEST_EVAL_SUMMARY_PATH, "w") as f:
+                json.dump(summary, f, indent=2)
+
+            self.write_best_rollout_csv(best_rollout_rows)
+
+            if self.verbose > 0:
+                print(f"New best model saved: {BEST_MODEL_PATH}")
+                print(f"Best eval summary:    {BEST_EVAL_SUMMARY_PATH}")
+                print(f"Best rollout CSV:     {BEST_ROLLOUT_CSV_PATH}\n")
+
+        return True
+
+    def evaluate_current_policy(self, step: int):
+        rows = []
+        best_rollout_rows = []
+        best_episode_reward = -np.inf
+
+        for target_index, target in enumerate(self.eval_targets):
+            obs, info = self.eval_env.reset(
+                options={"target_position": target.tolist()}
+            )
+
+            done = False
+            total_reward = 0.0
+            episode_rows = []
+            min_distance = float("inf")
+            final_distance = float("inf")
+            steps = 0
+            had_contact = False
+            had_safe_contact = False
+            had_side_hit = False
+            had_top_down_contact = False
+            had_failure = False
+            final_info = {}
+
+            while not done:
+                action, _ = self.model.predict(obs, deterministic=self.deterministic)
+                obs, reward, terminated, truncated, info = self.eval_env.step(action)
+
+                total_reward += float(reward)
+                steps += 1
+                final_info = info
+
+                distance = float(info.get("distance", np.nan))
+                if np.isfinite(distance):
+                    min_distance = min(min_distance, distance)
+                    final_distance = distance
+
+                had_contact = bool(
+                    had_contact
+                    or getattr(self.eval_env.unwrapped, "_whip_target_contact", False)
+                )
+                had_safe_contact = bool(had_safe_contact or info.get("safe_target_contact", False))
+                had_side_hit = bool(had_side_hit or info.get("valid_side_hit", False))
+                had_top_down_contact = bool(had_top_down_contact or info.get("top_down_contact", False))
+                had_failure = bool(
+                    had_failure
+                    or info.get("unsafe_robot_failure", False)
+                    or info.get("arm_tip_ground_hit", False)
+                    or info.get("robot_ground_contact", False)
+                    or info.get("arm_self_contact", False)
+                )
+
+                joint_values = obs.get("agent_joint_values", np.zeros(6))
+                elapsed = float(info.get("elapsed time [s]", steps * 0.01))
+
+                episode_rows.append(
+                    {
+                        "timesteps": step,
+                        "target_index": target_index,
+                        "elapsed_time": elapsed,
+                        "target_x": float(target[0]),
+                        "target_y": float(target[1]),
+                        "target_z": float(target[2]),
+                        "distance": distance,
+                        "reward": float(reward),
+                        "shoulder_pan_joint": float(joint_values[0]),
+                        "shoulder_lift_joint": float(joint_values[1]),
+                        "elbow_joint": float(joint_values[2]),
+                        "wrist_1_joint": float(joint_values[3]),
+                        "wrist_2_joint": float(joint_values[4]),
+                        "wrist_3_joint": float(joint_values[5]),
+                        "valid_side_hit": int(info.get("valid_side_hit", False)),
+                        "top_down_contact": int(info.get("top_down_contact", False)),
+                        "unsafe_robot_failure": int(info.get("unsafe_robot_failure", False)),
+                        "safe_target_contact": int(info.get("safe_target_contact", False)),
+                        "whip_target_contact": int(had_contact),
+                    }
+                )
+
+                done = bool(terminated or truncated)
+
+            close_hit = bool(min_distance <= CLOSE_HIT_DISTANCE_M and not had_failure)
+            success = bool(had_safe_contact or close_hit)
+
+            rows.append(
+                {
+                    "target_index": target_index,
+                    "target_x": float(target[0]),
+                    "target_y": float(target[1]),
+                    "target_z": float(target[2]),
+                    "total_reward": total_reward,
+                    "steps": steps,
+                    "min_distance": min_distance,
+                    "final_distance": final_distance,
+                    "contact_success": int(had_contact),
+                    "safe_contact": int(had_safe_contact),
+                    "close_hit": int(close_hit),
+                    "success": int(success),
+                    "side_hit": int(had_side_hit),
+                    "top_down_contact": int(had_top_down_contact),
+                    "failure": int(had_failure),
+                    "terminated": int(final_info.get("terminated", 0)),
+                    "truncated": int(final_info.get("truncated", 0)),
+                }
+            )
+
+            # Store the best-looking safe single rollout from this evaluation cycle.
+            # Avoid choosing a floor-smashing rollout just because its reward is high.
+            episode_selection_score = (
+                10_000.0 * int(had_safe_contact)
+                + 5_000.0 * int(had_side_hit)
+                + 1_000.0 * int(close_hit)
+                - 20_000.0 * int(had_failure)
+                - 2_000.0 * int(had_top_down_contact)
+                + 0.05 * total_reward
+                - 100.0 * min_distance
+            )
+            if episode_selection_score > best_episode_reward:
+                best_episode_reward = episode_selection_score
+                best_rollout_rows = episode_rows
+
+        rewards = np.array([r["total_reward"] for r in rows], dtype=np.float64)
+        min_distances = np.array([r["min_distance"] for r in rows], dtype=np.float64)
+        final_distances = np.array([r["final_distance"] for r in rows], dtype=np.float64)
+        contact_success = np.array([r["contact_success"] for r in rows], dtype=np.float64)
+        safe_contacts = np.array([r["safe_contact"] for r in rows], dtype=np.float64)
+        close_hits = np.array([r["close_hit"] for r in rows], dtype=np.float64)
+        side_hits = np.array([r["side_hit"] for r in rows], dtype=np.float64)
+        top_down_contacts = np.array([r["top_down_contact"] for r in rows], dtype=np.float64)
+        failures = np.array([r["failure"] for r in rows], dtype=np.float64)
+        steps_arr = np.array([r["steps"] for r in rows], dtype=np.float64)
+
+        contact_success_rate = float(np.mean(contact_success))
+        safe_contact_rate = float(np.mean(safe_contacts))
+        close_hit_rate = float(np.mean(close_hits))
+        side_hit_rate = float(np.mean(side_hits))
+        top_down_contact_rate = float(np.mean(top_down_contacts))
+        unsafe_failure_rate = float(np.mean(failures))
+        failure_rate = unsafe_failure_rate
+        mean_reward = float(np.mean(rewards))
+        mean_min_distance = float(np.mean(min_distances))
+        mean_final_distance = float(np.mean(final_distances))
+        mean_steps = float(np.mean(steps_arr))
+
+        # Model-selection high score. Safe contact and side hits dominate. Reward
+        # contributes only weakly, so reward-hacked unsafe hits should not win.
+        score = (
+            BEST_SCORE_SAFE_CONTACT_WEIGHT * safe_contact_rate
+            + BEST_SCORE_SIDE_HIT_WEIGHT * side_hit_rate
+            + BEST_SCORE_CLOSE_HIT_WEIGHT * close_hit_rate
+            + BEST_SCORE_REWARD_WEIGHT * mean_reward
+            - BEST_SCORE_MIN_DISTANCE_WEIGHT * mean_min_distance
+            - BEST_SCORE_UNSAFE_FAILURE_PENALTY * unsafe_failure_rate
+            - BEST_SCORE_TOP_DOWN_PENALTY * top_down_contact_rate
+        )
+
+        summary = {
+            "timesteps": step,
+            "score": float(score),
+            "safe_contact_rate": safe_contact_rate,
+            "contact_success_rate": contact_success_rate,
+            "close_hit_rate": close_hit_rate,
+            "side_hit_rate": side_hit_rate,
+            "top_down_contact_rate": top_down_contact_rate,
+            "unsafe_failure_rate": unsafe_failure_rate,
+            "failure_rate": failure_rate,
+            "mean_reward": mean_reward,
+            "mean_min_distance": mean_min_distance,
+            "mean_final_distance": mean_final_distance,
+            "mean_steps": mean_steps,
+        }
+
+        return summary, best_rollout_rows
+
+    def write_best_rollout_csv(self, rows):
+        if not rows:
+            return
+
+        with open(BEST_ROLLOUT_CSV_PATH, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+
+
+# ============================================================
+# TRAINING ENTRYPOINT
+# ============================================================
 
 def main():
-    # Ensure checkpoint directory exists
     os.makedirs(MODEL_SAVE_FOLDER, exist_ok=True)
+    os.makedirs(TENSOR_LOG_FOLDER, exist_ok=True)
 
-    # Create the environment
-    env = gym.make(ENVIRONMENT)
+    print("=== SAC target-conditioned training ===")
+    print(f"Environment:        {ENVIRONMENT}")
+    print(f"Model save folder:  {MODEL_SAVE_FOLDER}")
+    print(f"TensorBoard folder: {TENSOR_LOG_FOLDER}")
+    print(f"Total timesteps:    {TOTAL_TIMESTEPS}")
+    print(f"Parallel envs:       {N_PARALLEL_ENVS}")
+    print(f"Gradient steps/env:  {GRADIENT_STEPS_PER_ENV_STEP}")
+    print(f"Periodic saves:     1k until 10k, then every 10k")
+    print(f"Best-model eval:    every {BEST_MODEL_EVAL_FREQ} steps on {BEST_MODEL_N_EVAL_TARGETS} fixed targets")
+    print(f"Best model path:    {BEST_MODEL_PATH}")
+    if FIXED_CENTER_PRETRAIN_ENABLED:
+        print(f"Fixed-center pretrain: first {FIXED_CENTER_PRETRAIN_STEPS} steps")
+    else:
+        print("Fixed-center pretrain: disabled")
+    print("Note: SAC learning_starts is 10,000, so early checkpoints are mostly for pipeline health.")
+    print("======================================")
 
-    # Create a new model
-    # model = SAC(
-    #     policy="MultiInputPolicy",  # For environments with dict obs (like Fetch)
-    #     env=env,
-    #     verbose=1,
-    #     tensorboard_log=TENSOR_LOG_FOLDER
-    # )
+    env = make_vectorized_training_env()
 
-    # Load a pretrained model
-    model = SAC.load(MODEL_TO_LOAD, env=env)
+    resume_model_path = os.environ.get(SAC_RESUME_MODEL_ENV_VAR, "").strip()
+    loaded_from_warmstart = False
 
-    # Callback to save model every 'save_freq' steps
-    checkpointCallback = CheckpointCallback(save_freq=10_000, save_path=MODEL_SAVE_FOLDER)
+    if resume_model_path:
+        model_path = Path(resume_model_path).expanduser()
+        if not model_path.is_absolute():
+            model_path = Path(MODEL_SAVE_FOLDER) / model_path
+        if not model_path.exists():
+            raise FileNotFoundError(f"SAC_RESUME_MODEL does not exist: {model_path}")
 
-    # Continue training
-    model.learn(
-        total_timesteps=100_000_000,
-        log_interval=1,
-        callback=[checkpointCallback],
+        print(f"Loading SAC model from SAC_RESUME_MODEL: {model_path}")
+        model = SAC.load(
+            str(model_path),
+            env=env,
+            tensorboard_log=TENSOR_LOG_FOLDER,
+            device="auto",
+        )
+        loaded_from_warmstart = True
+
+    elif LOAD_BC_WARMSTART_IF_EXISTS and BC_WARMSTART_MODEL.exists():
+        print(f"Loading behavior-cloned warm-start model: {BC_WARMSTART_MODEL}")
+        model = SAC.load(
+            str(BC_WARMSTART_MODEL),
+            env=env,
+            tensorboard_log=TENSOR_LOG_FOLDER,
+            device="auto",
+        )
+        loaded_from_warmstart = True
+
+    else:
+        print("No warm-start model found. Starting SAC from scratch.")
+        model = SAC(
+            policy="MultiInputPolicy",
+            env=env,
+            verbose=1,
+            tensorboard_log=TENSOR_LOG_FOLDER,
+            learning_starts=10_000,
+            batch_size=256,
+            buffer_size=1_000_000,
+            train_freq=1,
+            gradient_steps=GRADIENT_STEPS_PER_ENV_STEP,
+            gamma=0.99,
+            tau=0.005,
+        )
+
+    min_progress = WARMSTART_MIN_TRAINING_PROGRESS if loaded_from_warmstart else 0.0
+    fixed_center_pretrain_for_this_run = bool(
+        FIXED_CENTER_PRETRAIN_ENABLED and not loaded_from_warmstart
     )
+    try:
+        env.env_method("set_fixed_center_training_mode", fixed_center_pretrain_for_this_run)
+    except Exception:
+        pass
+
+
+    callbacks = [
+        TrainingProgressCallback(
+            total_timesteps=TOTAL_TIMESTEPS,
+            min_progress=min_progress,
+            fixed_center_pretrain_steps=FIXED_CENTER_PRETRAIN_STEPS,
+            fixed_center_pretrain_enabled=fixed_center_pretrain_for_this_run,
+            verbose=0,
+        ),
+        TwoStageCheckpointCallback(
+            save_path=MODEL_SAVE_FOLDER,
+            name_prefix="rl_model",
+            verbose=1,
+        )
+    ]
+
+    if BEST_MODEL_EVAL_ENABLED:
+        callbacks.append(
+            BestWhipModelCallback(
+                eval_env_id=ENVIRONMENT,
+                eval_targets=EVAL_TARGETS[:BEST_MODEL_N_EVAL_TARGETS],
+                eval_freq=BEST_MODEL_EVAL_FREQ,
+                save_dir=MODEL_SAVE_FOLDER,
+                deterministic=BEST_MODEL_DETERMINISTIC,
+                verbose=1,
+            )
+        )
+
+    model.learn(
+        total_timesteps=TOTAL_TIMESTEPS,
+        log_interval=10,
+        callback=callbacks,
+        reset_num_timesteps=True,
+    )
+
+    model.save(os.path.join(MODEL_SAVE_FOLDER, "final_model"))
+    env.close()
 
 
 if __name__ == "__main__":

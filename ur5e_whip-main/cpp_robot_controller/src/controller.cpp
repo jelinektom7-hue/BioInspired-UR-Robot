@@ -2,11 +2,11 @@
 #include "trajectory_msgs/msg/joint_trajectory_point.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "cpp_robot_controller/srv/whip_object.hpp"
-#include <moveit/move_group_interface/move_group_interface.hpp>
+#include <moveit/move_group_interface/move_group_interface.h>
 #include <tf2/LinearMath/Quaternion.hpp>
 #include <geometry_msgs/msg/pose.hpp>
-#include <moveit/robot_state/robot_state.hpp>
-#include <moveit/robot_model_loader/robot_model_loader.hpp>
+#include <moveit/robot_state/robot_state.h>
+#include <moveit/robot_model_loader/robot_model_loader.h>
 #include "control_msgs/action/follow_joint_trajectory.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 

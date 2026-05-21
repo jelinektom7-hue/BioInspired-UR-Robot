@@ -1,0 +1,12 @@
+{
+  "timesteps": 40000,
+  "score": 1220.6487403268256,
+  "contact_success_rate": 0.07692307692307693,
+  "close_hit_rate": 0.07692307692307693,
+  "side_hit_rate": 0.0,
+  "failure_rate": 0.7692307692307693,
+  "mean_reward": 839.2795898713778,
+  "mean_min_distance": 0.8016931108301358,
+  "mean_final_distance": 1.4635684040175287,
+  "mean_steps": 192.30769230769232
+}

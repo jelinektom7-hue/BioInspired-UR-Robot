@@ -10,12 +10,38 @@ import rclpy
 
 from image_object_locator import imgproc
 
-resource = "src/ur5e_whip/image_object_locator/resource/"
-camera_calibration_document = resource + "camera_calibration.txt"
+from pathlib import Path
+
+camera_calibration_document = str(
+    Path.home()
+    / "ros2_ws"
+    / "src"
+    / "BioInspired-UR-Robot"
+    / "ur5e_whip-main"
+    / "image_object_locator"
+    / "resource"
+    / "camera_calibration.txt"
+)
 
 class ImageSubscriber(Node):
     def __init__(self):
         super().__init__('image_subscriber')
+
+        resource_path = (
+            Path.home()
+            / "ros2_ws"
+            / "src"
+            / "BioInspired-UR-Robot"
+            / "ur5e_whip-main"
+            / "image_object_locator"
+            / "resource"
+        )
+
+        resource_path.mkdir(parents=True, exist_ok=True)
+        (resource_path / "annotations").mkdir(parents=True, exist_ok=True)
+
+        resource = str(resource_path)
+        camera_calibration_document = str(resource_path / "camera_calibration.txt")
         
         # store camera calibration matrix
         # [ fx  0   cx ]

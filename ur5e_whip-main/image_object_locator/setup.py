@@ -15,6 +15,7 @@ setup(
     entry_points={
         'console_scripts': [
             'image_subscriber = image_object_locator.image_subscriber:main',
+            'fake_target_publisher = image_object_locator.fake_target_publisher:main',
         ],
     },
 )

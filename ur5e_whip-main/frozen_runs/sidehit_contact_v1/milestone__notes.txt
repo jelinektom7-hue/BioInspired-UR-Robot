@@ -1,0 +1,13 @@
+sim-to-real interface milestone:
+
+dragos@dragos-Lenovo-Legion-5-17ARH05H:~/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning$ deactivate 2>/dev/null
+export PYTHONNOUSERSITE=1
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+cd /home/dragos/ros2_ws/src/BioInspired-UR-Robot/ur5e_whip-main/reinforcement_learning
+python3 send_csv_trajectory.py
+[INFO] [1777537404.537579799] [csv_trajectory_sender]: Waiting for action server: /scaled_joint_trajectory_controller/follow_joint_trajectory
+[INFO] [1777537404.541285594] [csv_trajectory_sender]: Sending trajectory with 97 points
+[INFO] [1777537405.417958218] [csv_trajectory_sender]: Trajectory accepted
+[INFO] [1777537409.318701784] [csv_trajectory_sender]: Done. Error code: 0
